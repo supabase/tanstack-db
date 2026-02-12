@@ -1,6 +1,5 @@
-import { expect, test } from 'vitest'
-import { supabaseCollectionOptions } from '../src'
+import { test } from "vitest"
 
-test('fn', () => {
+test("fn", () => {
   // expect(fn()).toBe('Hello, tsdown!')
 })

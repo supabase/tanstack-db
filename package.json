@@ -28,21 +28,25 @@
     "dev": "tsdown --watch",
     "test": "vitest",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "pnpm run build"
+    "prepublishOnly": "pnpm run build",
+    "check": "ultracite check",
+    "fix": "ultracite fix"
   },
   "dependencies": {
-    "@tanstack/react-db": "^0.1.0",
-    "@tanstack/query-db-collection": "^1.0.0",
     "@standard-schema/spec": "^1.1.0",
     "@supabase/postgrest-js": "^2.90.0",
     "@supabase/supabase-js": "^2.90.0",
-    "@tanstack/query-core": "^5.90.0"
+    "@tanstack/query-core": "^5.90.0",
+    "@tanstack/query-db-collection": "^1.0.0",
+    "@tanstack/react-db": "^0.1.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.3.13",
     "@types/node": "^25.0.0",
     "bumpp": "^10.3.0",
     "tsdown": "^0.18.0",
     "typescript": "~5.9.0",
+    "ultracite": "7.1.5",
     "vitest": "^4.0.0"
   }
 }
