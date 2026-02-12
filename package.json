@@ -1,0 +1,48 @@
+{
+  "name": "@supabase/tanstack-db",
+  "type": "module",
+  "version": "0.0.0",
+  "description": "A starter for creating a TypeScript package.",
+  "author": "Supabase <support@supabase.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/author/library#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/author/library.git"
+  },
+  "bugs": {
+    "url": "https://github.com/author/library/issues"
+  },
+  "exports": {
+    ".": "./dist/index.mjs",
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "test": "vitest",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": {
+    "@tanstack/react-db": "^0.1.0",
+    "@tanstack/query-db-collection": "^1.0.0",
+    "@standard-schema/spec": "^1.1.0",
+    "@supabase/postgrest-js": "^2.90.0",
+    "@supabase/supabase-js": "^2.90.0",
+    "@tanstack/query-core": "^5.90.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "bumpp": "^10.3.0",
+    "tsdown": "^0.18.0",
+    "typescript": "~5.9.0",
+    "vitest": "^4.0.0"
+  }
+}
