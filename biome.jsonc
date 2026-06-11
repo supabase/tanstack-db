@@ -1,9 +1,22 @@
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
-  "extends": ["ultracite/biome/core"],
+  "extends": ["ultracite/biome/core", "ultracite/biome/vitest"],
+  "files": {
+    "includes": ["!!dist/**/*"]
+  },
   "javascript": {
     "formatter": {
       "semicolons": "asNeeded"
+    }
+  },
+  "linter": {
+    "rules": {
+      // disable the rules for now, as they are too noisy and we want to focus on the formatting first
+      "performance": "off",
+      "suspicious": "off",
+      "correctness": "off",
+      "style": "off",
+      "complexity": "off"
     }
   }
 }

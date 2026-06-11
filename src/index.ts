@@ -1,2 +1,4 @@
-// biome-ignore lint/performance/noBarrelFile: <explanation>
-export { attachSupabaseListeners, supabaseCollectionOptions } from "./db"
+import { supabaseCollectionOptions } from "./db"
+import { queryOnce } from "./query-once"
+
+export { queryOnce, supabaseCollectionOptions }

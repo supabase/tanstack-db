@@ -1,9 +1,5 @@
-/** biome-ignore-all lint/complexity/noForEach: <explanation> */
-/** biome-ignore-all lint/suspicious/noExplicitAny: <explanation> */
-/** biome-ignore-all lint/style/noParameterAssign: <explanation> */
 import type { PostgrestFilterBuilder } from "@supabase/postgrest-js"
 import type { SupabaseClient } from "@supabase/supabase-js"
-import type { QueryClient, QueryMeta } from "@tanstack/query-core"
 import {
   type DeleteMutationFnParams,
   extractSimpleComparisons,
@@ -14,10 +10,11 @@ import {
   parseWhereExpression,
   type SimpleComparison,
   type UpdateMutationFnParams,
-} from "@tanstack/react-db"
+} from "@tanstack/db"
+import type { QueryClient, QueryMeta } from "@tanstack/query-core"
 
 const buildQuery = (
-  baseQuery: PostgrestFilterBuilder<any, any, any, any, any, any, any>,
+  baseQuery: PostgrestFilterBuilder<any, any, any, any>,
   filter: SimpleComparison
 ) => {
   if (filter.operator === "eq") {
@@ -27,13 +24,13 @@ const buildQuery = (
   } else if (filter.operator === "gte") {
     baseQuery = baseQuery.gte(filter.field?.join("."), filter.value)
   } else if (filter.operator === "lt") {
-    baseQuery = baseQuery.lt(filter.field.join("."), filter.value)
+    baseQuery = baseQuery.lt(filter.field?.join("."), filter.value)
   } else if (filter.operator === "lte") {
-    baseQuery = baseQuery.lte(filter.field.join("."), filter.value)
+    baseQuery = baseQuery.lte(filter.field?.join("."), filter.value)
   } else if (filter.operator === "in") {
-    baseQuery = baseQuery.in(filter.field.join("."), filter.value)
+    baseQuery = baseQuery.in(filter.field?.join("."), filter.value)
   } else if (filter.operator === "isNull") {
-    baseQuery = baseQuery.is(filter.field.join("."), null)
+    baseQuery = baseQuery.is(filter.field?.join("."), null)
   } else if (filter.operator === "not_eq") {
     baseQuery = baseQuery.not(filter.field?.join("."), "eq", filter.value)
   } else {
@@ -45,40 +42,65 @@ export const subsetOptionsToQueryKey = (
   tableName: string,
   ctx: LoadSubsetOptions
 ) => {
-  const filters =
-    parseWhereExpression(ctx.where, {
-      handlers: {
-        eq: (field, value) => {
-          return `${field.join(".")}=eq.${value}`
-        },
-        or: (field, value) => {
-          return `or(${field},${value})`
-        },
-        isNull: (field) => `${field.join(".")}=is.null`,
-        in: (field, value) => {
-          const uniqueValues = Array.from(new Set(value))
-          return `${field.join(".")}=in.${uniqueValues}`
-        },
-        and: (...filters) => {
-          return `${filters.map((filter) => filter).join("&")}`
-        },
+  const filters = parseWhereExpression(ctx.where, {
+    handlers: {
+      eq: (field, value) => {
+        return `${field.join(".")}=eq.${value}`
       },
-      onUnknownOperator: (operator) => {
-        console.warn(`Unsupported operator: ${operator}`)
-        return null
+      or: (field, value) => {
+        return `or(${field},${value})`
       },
-    }) || []
+      isNull: (field) => `${field.join(".")}=is.null`,
+      in: (field, value) => {
+        const uniqueValues = Array.from(new Set(value))
+        return `${field.join(".")}=in.${uniqueValues}`
+      },
+      and: (...filters) => {
+        return `${filters.map((filter) => filter).join("&")}`
+      },
+      gt: (field, value) => {
+        return `${field.join(".")}=gt.${value}`
+      },
+      gte: (field, value) => {
+        return `${field.join(".")}=gte.${value}`
+      },
+      lt: (field, value) => {
+        return `${field.join(".")}=lt.${value}`
+      },
+      lte: (field, value) => {
+        return `${field.join(".")}=lte.${value}`
+      },
+      not: (field, operator, value) => {
+        return field
+      },
+    },
+    onUnknownOperator: (operator, args) => {
+      console.warn(`Unsupported operator: ${operator}`)
+      return null
+    },
+  })
 
   const sorts = parseOrderByExpression(ctx.orderBy)
   const limit = ctx.limit
 
-  const a = [
-    tableName,
-    filters,
-    sorts.map((sort) => `${sort.field.join(".")}:${sort.direction}`),
-    limit,
-  ]
-  return a
+  const options: Record<string, string> = {}
+  if (filters) {
+    options["filters"] = filters
+  }
+  if (sorts.length > 0) {
+    options["sorts"] = sorts
+      .map((sort) => `${sort.field.join(".")}:${sort.direction}`)
+      .join(",")
+  }
+  if (limit) {
+    options["limit"] = limit.toString()
+  }
+
+  const result: any[] = [tableName]
+  if (Object.keys(options).length > 0) {
+    result.push(options)
+  }
+  return result
 }
 
 export const supabaseQueryFn = async (
