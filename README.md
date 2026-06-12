@@ -10,11 +10,11 @@ A [TanStack DB](https://tanstack.com/db/latest) collection backed by [Supabase](
 - **Automatic Realtime sync** — when another user changes a row, every client with a live query on that collection sees the update immediately, with no subscription code to write.
 - **Fully typed** — collections derive their types from your schema, so queries and mutations are type-checked end to end.
 
-Your Supabase database remains the source of truth. Postgres, RLS, Auth, and the rest of the stack are unchanged — this is a frontend data layer that plugs into what's already there with no migration required.
+Your Supabase database remains the source of truth. Postgres, RLS, Auth, and the rest of the stack are unchanged - this is a frontend data layer that plugs into what's already there with no migration required.
 
 ## Prerequisites
 
-You need to have a project already setup with Supabase. You can find a guide for your framework [here](https://supabase.com/docs/guides/getting-started).
+You need to have a project already setup with Supabase. This includes client libraries and environment variables. You can find a guide for your framework [here](https://supabase.com/docs/guides/getting-started).
 
 ## Installation
 
@@ -26,13 +26,15 @@ npm install @supabase-labs/tanstack-db @tanstack/react-db @supabase/supabase-js
 
 ### 1. Enable Realtime on the tables you want synced (optional)
 
-Run this in your SQL Editor to enable realtime for your table:
+Run the following snippet in your SQL Editor to enable realtime for your table:
 
 ```sql
 alter publication supabase_realtime add table "public"."todos";
 ```
 
 ### 2. Define a collection
+
+For each table that you want to access in your frontend app, you need to define it like so:
 
 ```ts
 import { createCollection } from "@tanstack/react-db";
@@ -60,7 +62,9 @@ const todos = createCollection(
 );
 ```
 
-### 3. Use it in your components
+### 3. Use the collections in your components
+
+The collections you've defined can then be used with `useLiveQuery` 
 
 ```tsx
 import { useLiveQuery, eq } from "@tanstack/react-db";
@@ -72,7 +76,9 @@ const ActiveTodoList = () => {
     q.from({ todo: todos })
     .join({ user: users }, ({ todo, user }) => eq(todo.user_id, user.id))
     .where(({ todo }) => eq(todo.completed, false))
-    .orderBy(({ todo }) => todo.priority, "desc")
+    .orderBy(({ todo }) => todo.priority, "desc"),
+    // dependency list which will cause the query to refetch
+    []
   );
 
   // function to update a todo, will rerender without waiting for the result
@@ -89,23 +95,7 @@ const ActiveTodoList = () => {
   ...
 }
 ```
-
-#### One-shot queries
-
-Use `queryOnce` when you need a single, non-reactive fetch — for example in server components, API routes, or form submissions where live updates aren't needed.
-
-```ts
-import { eq } from "@tanstack/react-db";
-import { queryOnce } from "@supabase-labs/tanstack-db";
-
-// fetch all matching rows
-const completedTodos = await queryOnce(
-  (q) => q.from({ todo: todos }).where(({ todo }) => eq(todo.completed, true)),
-  []
-);
-```
-
-Unlike `useLiveQuery`, `queryOnce` issues one request and resolves with the result — it doesn't subscribe to changes. Filters, ordering, `limit`, `offset`, joins, and aggregate functions (`count`, `sum`, `avg`, `min`, `max`) are pushed server-side. Operations that can't be pushed (`GROUP BY`, `HAVING`, `DISTINCT`, computed `SELECT` expressions) fall back to fetching the rows and processing them client-side.
+Updates and deletions are done via imperative methods - you don't need to define hooks or mutations, you just call `collection.update` or `collection.delete`.
 
 ## API reference
 
@@ -133,9 +123,9 @@ const todos = createCollection(
 | ------------- | ------------------- | -------- | ----------- |
 | `tableName`   | `string`            | Yes      | Name of the Postgres table. Maps to the PostgREST endpoint and the Realtime channel. |
 | `schema`      | `StandardSchemaV1`  | Yes      | Schema describing a row — any [Standard Schema](https://standardschema.dev) (Zod, Valibot, …). Drives row typing and validation. |
-| `keys`        | `string[]`          | Yes      | Column(s) that uniquely identify a row. Used to derive the collection key and to build `where` clauses for updates and deletes. A single column is used as-is; composite keys are joined with `-`. |
+| `keys`        | `string[]`          | Yes      | Column(s) that uniquely identify a row. Should match the unique keys you've defined for your table |
 | `supabase`    | `SupabaseClient`    | Yes      | The Supabase client instance. Used for queries, mutations, and the Realtime subscription. |
-| `realtime`    | `boolean`           | No       | When `true`, subscribes to Postgres changes for the table and reconciles inserts, updates, and deletes into the collection. The channel opens only while a live query is active and tears down when none remain. Defaults to `false`. |
+| `realtime`    | `boolean`           | No       | When `true`, subscribes to Postgres changes for the table and reconciles inserts, updates, and deletes into the collection. Defaults to `false`. |
 | `queryClient` | `QueryClient`       | No       | A TanStack Query client. If omitted, a shared global client is used. |
 
 **Returns** — a collection options object to pass to `createCollection`.
@@ -160,7 +150,20 @@ const completedTodos = await queryOnce(
 
 **Returns** — a `Promise` resolving to the query result, typed from the query you built.
 
-Aggregate functions (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`) push to PostgREST when using `queryOnce` (unlike `useLiveQuery`, where they run client-side).
+Use `queryOnce` when you need a single, non-reactive fetch — for example in server components, API routes, or form submissions where live updates aren't needed.
+
+```ts
+import { eq } from "@tanstack/react-db";
+import { queryOnce } from "@supabase-labs/tanstack-db";
+
+// fetch all matching rows
+const completedTodos = await queryOnce(
+  (q) => q.from({ todo: todos }).where(({ todo }) => eq(todo.completed, true)),
+  []
+);
+```
+
+Unlike `useLiveQuery`, `queryOnce` issues one request and resolves with the result — it doesn't subscribe to changes. Filters, ordering, `limit`, `offset`, joins, and aggregate functions (`count`, `sum`, `avg`, `min`, `max`) are pushed server-side. Operations that can't be pushed (`GROUP BY`, `HAVING`, `DISTINCT`, computed `SELECT` expressions) fall back to fetching the rows and processing them client-side.
 
 ## How it works
 
@@ -207,16 +210,7 @@ Yes. This library uses `supabase-js` under the hood, so they're fully compatible
 
 This library targets Supabase/PostgREST tables. For custom backends, write your own TanStack DB collection — see the [TanStack DB docs](https://tanstack.com/db/latest) on building collection adapters to get the same live-query and optimistic-mutation benefits.
 
-## Limitations
-
-- All columns are fetched for every row — specific column selection can't push to PostgREST.
-- `GROUP BY`, aggregates, and computed `SELECT` expressions run client-side. `WHERE` filters still push to PostgREST, so only filtered rows transfer. These operations are limited to a single collection and can't run across joins. Exception: aggregate functions push server-side when using `queryOnce`.
-- `OR` conditions and nested `AND`/`OR` are not yet supported.
-- `OFFSET` is not yet supported — use `LIMIT` only for pagination (bug in TanStack DB).
-- `findOne` fetches the whole table instead of using `LIMIT=1` (bug in TanStack DB).
-
 ## Roadmap
 
-- **Automatic collection generation** — generate collection definitions from your database schema via the Supabase CLI, keeping them in sync as your schema evolves. 
+- generate collection definitions from your database schema via the Supabase CLI, keeping them in sync as your schema evolves. 
 - `OR` conditions and nested `AND`/`OR` support.
-- Specific column selection pushed to PostgREST.
