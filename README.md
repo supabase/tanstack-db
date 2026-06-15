@@ -192,9 +192,7 @@ These operations fetch the required rows and process them in memory:
 
 ## FAQ
 
-<details>
-
-<summary>Will this work with my RLS policies?</summary>
+**Will this work with my RLS policies?**
 
 Yes. `tanstack-db` goes through PostgREST and Realtime, so your existing RLS policies apply automatically. To enable Realtime sync for a table, run:
 
@@ -202,35 +200,21 @@ Yes. `tanstack-db` goes through PostgREST and Realtime, so your existing RLS pol
 alter publication supabase_realtime add table "public"."todos";
 ```
 
-</details>
-
-<details>
-
-<summary>What if I do not use RLS?</summary>
+**What if I do not use RLS?**
 
 Without RLS, all Realtime changes broadcast to every client. Depending on whether your app is public or private, that may not be what you want.
 
 Set `realtime: false` on specific collections. You will still get optimistic mutations and automatic cache invalidation.
 
-</details>
-
-<details>
-
-<summary>Can I use <code>tanstack-db</code> and <code>supabase-js</code> in parallel?</summary>
+**Can I use `tanstack-db` and `supabase-js` in parallel?**
 
 Yes. This library uses `supabase-js` under the hood, so they are compatible. Data fetched directly through `supabase-js` will not appear in the `tanstack-db` cache.
 
 Use `supabase-js` as a fallback for features TanStack DB does not cover, such as database functions through `.rpc` or complex `GROUP BY` queries.
 
-</details>
-
-<details>
-
-<summary>Will this work with a custom API server?</summary>
+**Will this work with a custom API server?**
 
 This library targets Supabase and PostgREST tables. For custom backends, write your own TanStack DB collection. The [TanStack DB docs](https://tanstack.com/db/latest) cover collection adapters.
-
-</details>
 
 ## Roadmap
 
