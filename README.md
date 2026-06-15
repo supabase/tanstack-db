@@ -9,11 +9,13 @@ A [TanStack DB](https://tanstack.com/db/latest) collection backed by [Supabase](
 - **Automatic Realtime sync** - when another user changes a row, every client with a live query on that collection sees the update immediately, with no subscription code to write.
 - **Fully typed** - collections derive their types from your schema, so queries and mutations are type-checked end to end.
 
-Your Supabase database remains the source of truth. Postgres, RLS, Auth, and the rest of the stack are untouched - this is a frontend data layer that plugs into what's already there with no migration required.
+Your Supabase database remains the source of truth. Postgres, RLS, Auth, and the rest of the stack are untouched, this is a frontend data layer that plugs into what's already there with no migration required.
 
 ## Prerequisites
 
-You need an existing Supabase project with the client library and environment variables configured. If you haven't done that yet, follow the [getting started guide](https://supabase.com/docs/guides/getting-started) for your framework.
+On the Supabase side, you need an existing Supabase project with the client library and environment variables configured. If you haven't done that yet, follow the [getting started guide](https://supabase.com/docs/guides/getting-started) for your framework.
+
+On the Tanstack DB side, it has [official libraries](https://tanstack.com/db/latest/docs/framework) for the major frontend frameworks. Please note, Tanstack DB doesn't yet support server-side rendering, so it will only fetch on client side.
 
 ## Installation
 
@@ -25,7 +27,7 @@ npm install @supabase-labs/tanstack-db @tanstack/react-db @supabase/supabase-js
 
 ### 1. Enable Realtime on the tables you want synced (optional)
 
-Run this in your SQL Editor:
+Enable Realtime for your your table in Table Editor or run this in your SQL Editor:
 
 ```sql
 alter publication supabase_realtime add table "public"."todos";
@@ -33,7 +35,7 @@ alter publication supabase_realtime add table "public"."todos";
 
 ### 2. Define a collection
 
-Create one collection per table you want to access in your frontend:
+In Tanstack DB, collection corresponds to tables in Postgres. Create one collection per table you want to access in your frontend:
 
 ```ts
 import { createCollection } from "@tanstack/react-db";
@@ -63,7 +65,7 @@ const todos = createCollection(
 
 ### 3. Use collections in your components
 
-Query collections with `useLiveQuery`. Mutations are imperative - call `collection.update` or `collection.delete` directly, no hooks or mutation objects required.
+Query collections with `useLiveQuery`. Mutations are methods on the collection, call `collection.update` or `collection.delete` directly, no hooks or mutation objects required.
 
 ```tsx
 import { useLiveQuery, eq } from "@tanstack/react-db";
@@ -196,7 +198,7 @@ Without RLS, all Realtime changes broadcast to every client. Depending on whethe
 
 **Can I use `tanstack-db` and `supabase-js` in parallel?**
 
-Yes. This library uses `supabase-js` under the hood, so they're fully compatible. Data fetched directly through `supabase-js` won't appear in the `tanstack-db` cache.
+Yes. This library uses `supabase-js` under the hood, so they're fully compatible. Data fetched directly through `supabase-js` won't appear in the `tanstack-db` cache. You can use `supabase-js` as a fallback if Tanstack DB doesn't support your need like call database functions via the `.rpc` method or write complex `group by` and aggregate functions.
 
 **Will this work with a custom API server?**
 
