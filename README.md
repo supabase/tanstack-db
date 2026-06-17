@@ -194,17 +194,11 @@ These operations fetch the required rows and process them in memory:
 
 **Will this work with my RLS policies?**
 
-Yes. `tanstack-db` goes through PostgREST and Realtime, so your existing RLS policies apply automatically. To enable Realtime sync for a table, run:
-
-```sql
-alter publication supabase_realtime add table "public"."todos";
-```
+Yes. `tanstack-db` goes through PostgREST and Realtime, so your existing RLS policies apply automatically. 
 
 **What if I do not use RLS?**
 
 Without RLS, all Realtime changes broadcast to every client. Depending on whether your app is public or private, that may not be what you want.
-
-Set `realtime: false` on specific collections. You will still get optimistic mutations and automatic cache invalidation.
 
 **Can I use `tanstack-db` and `supabase-js` in parallel?**
 
