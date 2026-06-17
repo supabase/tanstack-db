@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js"
 import { createCollection, liveQueryCollectionOptions } from "@tanstack/db"
+import { QueryClient } from "@tanstack/query-core"
 import { expect, vi } from "vitest"
 import { z } from "zod"
 import { supabaseCollectionOptions } from "../src/index"
@@ -96,6 +97,63 @@ export function createMockedTodosCollection(mockFetch: typeof fetch) {
       }),
     })
   )
+}
+
+// --- Realtime mock infrastructure ---
+
+type MockChannelOnCall = {
+  type: string
+  config: { event: string; schema: string; table: string; filter?: string }
+  handler: (payload: any) => void
+}
+
+export type MockChannel = {
+  onCalls: MockChannelOnCall[]
+  on: ReturnType<typeof vi.fn>
+  subscribe: ReturnType<typeof vi.fn>
+}
+
+export function createMockChannel(): MockChannel {
+  const onCalls: MockChannelOnCall[] = []
+  const channel = {
+    onCalls,
+    on: vi.fn((type: string, config: any, handler: (payload: any) => void) => {
+      onCalls.push({ type, config, handler })
+      return channel
+    }),
+    subscribe: vi.fn(() => channel),
+  }
+  return channel
+}
+
+export function createRealtimeUsersCollection(
+  mockFetch: typeof fetch,
+  mockChannel: MockChannel
+) {
+  // A fresh QueryClient keeps the module-level realtime registry in db.ts
+  // isolated per test.
+  const queryClient = new QueryClient()
+  const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+    global: { fetch: mockFetch },
+  })
+  // The real client would open a live WebSocket, so stub the realtime surface.
+  supabase.channel = vi.fn(
+    () => mockChannel
+  ) as unknown as typeof supabase.channel
+  supabase.removeChannel = vi.fn() as unknown as typeof supabase.removeChannel
+
+  const collection = createCollection(
+    supabaseCollectionOptions({
+      tableName: "users",
+      keys: ["id"],
+      schema: usersSchema,
+      supabase,
+      realtime: true,
+      queryClient,
+    })
+  )
+
+  return { collection, supabase, queryClient }
 }
 
 // --- Query helpers ---

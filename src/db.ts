@@ -13,6 +13,7 @@ import {
   supabaseQueryFn,
 } from "./functions"
 import { getQueryClient } from "./query-client"
+import { attachSupabaseListeners, buildRealtimeFilters } from "./realtime"
 
 type GenericPostgrestFilterBuilder = PostgrestFilterBuilder<any, any, any, any>
 
@@ -38,6 +39,8 @@ interface SupabaseCollectionOptions<TSchema extends StandardSchemaV1> {
 interface TableEntry {
   collectionRef: Collection<any, any> | null
   realtimeChannel: ReturnType<SupabaseClient["channel"]> | null
+  /** Serialized set of Realtime filters the current channel was subscribed with */
+  realtimeFiltersKey: string | null
   supabase: SupabaseClient
 }
 
@@ -62,16 +65,44 @@ const ensureQueryCacheSubscription = (queryClient: QueryClient) => {
         type: "active",
       })
 
-      if (queries.length > 0 && !entry.realtimeChannel && entry.collectionRef) {
-        entry.realtimeChannel = attachSupabaseListeners(
-          entry.supabase,
-          tableName,
-          entry.collectionRef
-        )
-      } else if (queries.length === 0 && entry.realtimeChannel) {
-        entry.supabase.removeChannel(entry.realtimeChannel)
-        entry.realtimeChannel = null
+      // No active queries: tear down any existing subscription.
+      if (queries.length === 0) {
+        if (entry.realtimeChannel) {
+          entry.supabase.removeChannel(entry.realtimeChannel)
+          entry.realtimeChannel = null
+          entry.realtimeFiltersKey = null
+        }
+        continue
       }
+
+      if (!entry.collectionRef) {
+        continue
+      }
+
+      // Derive the Realtime filters from the WHERE clause of every active query
+      // so the subscription only receives changes that those queries care about.
+      const whereExpressions = queries.map(
+        (query) => query.meta?.loadSubsetOptions?.where
+      )
+      const filters = buildRealtimeFilters(whereExpressions)
+      const filtersKey = JSON.stringify(filters)
+
+      // Reuse the existing channel when the set of filters hasn't changed.
+      if (entry.realtimeChannel && entry.realtimeFiltersKey === filtersKey) {
+        continue
+      }
+
+      // Filters changed (or no channel yet): (re)subscribe with the new filters.
+      if (entry.realtimeChannel) {
+        entry.supabase.removeChannel(entry.realtimeChannel)
+      }
+      entry.realtimeChannel = attachSupabaseListeners(
+        entry.supabase,
+        tableName,
+        entry.collectionRef,
+        filters
+      )
+      entry.realtimeFiltersKey = filtersKey
     }
   })
 }
@@ -90,6 +121,7 @@ const registerTable = (
       supabase,
       collectionRef: null,
       realtimeChannel: null,
+      realtimeFiltersKey: null,
     })
   }
 
@@ -163,40 +195,4 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
       },
     },
   }
-}
-
-export const attachSupabaseListeners = <
-  T extends object,
-  TKey extends string | number,
->(
-  supabase: SupabaseClient,
-  tableName: string,
-  collection: Collection<T, TKey>
-): ReturnType<SupabaseClient["channel"]> | null => {
-  if (!supabase.channel) {
-    console.log("Server supabase doesn't have a channel")
-    return null
-  }
-
-  const channel = supabase.channel(tableName)
-  channel
-    .on<T>(
-      "postgres_changes",
-      { event: "*", schema: "public", table: tableName },
-      (payload) => {
-        if (payload.eventType === "INSERT") {
-          collection.utils.writeInsert(payload.new)
-        } else if (payload.eventType === "UPDATE") {
-          collection.utils.writeUpdate(payload.new)
-        } else if (payload.eventType === "DELETE") {
-          const id = collection.getKeyFromItem(payload.old as T)
-          if (collection.has(id)) {
-            collection.utils.writeDelete(id)
-          }
-        }
-      }
-    )
-    .subscribe()
-
-  return channel
 }
