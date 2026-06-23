@@ -24,6 +24,8 @@ export interface SerializedIncludesSubquery {
 export type SerializedFrom =
   | { type: `table`; name: string; alias: string }
   | { type: `subquery`; query: SerializedQueryIR; alias: string }
+  | { type: `union`; sources: Array<SerializedFrom>; alias: string }
+  | { type: `unionAll`; queries: Array<SerializedQueryIR>; alias: string }
 
 export type SerializedWhere =
   | SerializedExpression
@@ -113,18 +115,34 @@ export function serializeQueryIR(query: IR.QueryIR): SerializedQueryIR {
   return result
 }
 
-function serializeFrom(from: IR.CollectionRef | IR.QueryRef): SerializedFrom {
-  if (from.type === `collectionRef`) {
-    return {
-      type: `table`,
-      name: from.collection.id,
-      alias: from.alias,
-    }
-  }
-  return {
-    type: `subquery`,
-    query: serializeQueryIR(from.query),
-    alias: from.alias,
+function serializeFrom(from: IR.From): SerializedFrom {
+  switch (from.type) {
+    case `collectionRef`:
+      return {
+        type: `table`,
+        name: from.collection.id,
+        alias: from.alias,
+      }
+    case `queryRef`:
+      return {
+        type: `subquery`,
+        query: serializeQueryIR(from.query),
+        alias: from.alias,
+      }
+    case `unionFrom`:
+      return {
+        type: `union`,
+        sources: from.sources.map(serializeFrom),
+        alias: from.alias,
+      }
+    case `unionAll`:
+      return {
+        type: `unionAll`,
+        queries: from.queries.map(serializeQueryIR),
+        alias: from.alias,
+      }
+    default:
+      throw new Error(`Unknown from type: ${(from as { type: string }).type}`)
   }
 }
 

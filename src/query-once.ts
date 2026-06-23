@@ -66,11 +66,17 @@ function resolveFrom(from: SerializedFrom): {
   if (from.type === "table") {
     return { tableName: from.name, wheres: [] }
   }
-  const inner = resolveFrom(from.query.from)
-  return {
-    tableName: inner.tableName,
-    wheres: [...inner.wheres, ...(from.query.where ?? [])],
+  if (from.type === "subquery") {
+    const inner = resolveFrom(from.query.from)
+    return {
+      tableName: inner.tableName,
+      wheres: [...inner.wheres, ...(from.query.where ?? [])],
+    }
   }
+  // union / unionAll have no single base table to push to PostgREST
+  throw new Error(
+    `Cannot push a ${from.type} query to PostgREST; unions are not supported in queryOnce`
+  )
 }
 
 // ── Select string building ──────────────────────────────────────────
