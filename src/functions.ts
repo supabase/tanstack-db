@@ -13,29 +13,43 @@ import {
 } from "@tanstack/db"
 import type { QueryClient, QueryMeta } from "@tanstack/query-core"
 
+type GenericPostgrestFilterBuilder = PostgrestFilterBuilder<any, any, any, any>
+
+// Default range size used when an offset is requested without an explicit
+// limit, matching the one-shot queryOnce path.
+const DEFAULT_PAGE_SIZE = 1000
+
 const buildQuery = (
-  baseQuery: PostgrestFilterBuilder<any, any, any, any>,
+  baseQuery: GenericPostgrestFilterBuilder,
   filter: SimpleComparison
-) => {
+): GenericPostgrestFilterBuilder => {
+  const column = filter.field?.join(".")
   if (filter.operator === "eq") {
-    baseQuery = baseQuery.eq(filter.field?.join("."), filter.value)
-  } else if (filter.operator === "gt") {
-    baseQuery = baseQuery.gt(filter.field?.join("."), filter.value)
-  } else if (filter.operator === "gte") {
-    baseQuery = baseQuery.gte(filter.field?.join("."), filter.value)
-  } else if (filter.operator === "lt") {
-    baseQuery = baseQuery.lt(filter.field?.join("."), filter.value)
-  } else if (filter.operator === "lte") {
-    baseQuery = baseQuery.lte(filter.field?.join("."), filter.value)
-  } else if (filter.operator === "in") {
-    baseQuery = baseQuery.in(filter.field?.join("."), filter.value)
-  } else if (filter.operator === "isNull") {
-    baseQuery = baseQuery.is(filter.field?.join("."), null)
-  } else if (filter.operator === "not_eq") {
-    baseQuery = baseQuery.not(filter.field?.join("."), "eq", filter.value)
-  } else {
-    console.warn(`buildQuery: unsupported operator: ${filter.operator}`)
+    return baseQuery.eq(column, filter.value)
   }
+  if (filter.operator === "gt") {
+    return baseQuery.gt(column, filter.value)
+  }
+  if (filter.operator === "gte") {
+    return baseQuery.gte(column, filter.value)
+  }
+  if (filter.operator === "lt") {
+    return baseQuery.lt(column, filter.value)
+  }
+  if (filter.operator === "lte") {
+    return baseQuery.lte(column, filter.value)
+  }
+  if (filter.operator === "in") {
+    return baseQuery.in(column, filter.value)
+  }
+  if (filter.operator === "isNull") {
+    return baseQuery.is(column, null)
+  }
+  if (filter.operator === "not_eq") {
+    return baseQuery.not(column, "eq", filter.value)
+  }
+  console.warn(`buildQuery: unsupported operator: ${filter.operator}`)
+  return baseQuery
 }
 
 export const subsetOptionsToQueryKey = (
@@ -70,9 +84,10 @@ export const subsetOptionsToQueryKey = (
       lte: (field, value) => {
         return `${field.join(".")}=lte.${value}`
       },
-      not: (field, operator, value) => {
-        return field
-      },
+      // `not` receives the already-parsed inner clause (e.g. "active=eq.false").
+      // Wrap it so a negated clause produces a distinct cache key from the
+      // un-negated one instead of colliding with it.
+      not: (inner) => `not(${inner})`,
     },
     onUnknownOperator: (operator, args) => {
       console.warn(`Unsupported operator: ${operator}`)
@@ -124,8 +139,6 @@ export const supabaseQueryFn = async (
   }
   // Parse the expressions into simple format
   const parsed = parseLoadSubsetOptions({ orderBy, limit, where })
-  // console.log(tableName, parsed);
-  // console.log(tableName, cursorFilters);
 
   let baseQuery = supabase.from(tableName).select("*")
 
@@ -134,7 +147,11 @@ export const supabaseQueryFn = async (
   }
 
   if (offset) {
-    baseQuery = baseQuery.range(offset, offset + 5)
+    // range() is inclusive on both ends, so the end index is the offset plus
+    // the page size minus one. Without an explicit limit, fall back to a
+    // sensible default page size instead of a hard-coded window.
+    const end = offset + (parsed.limit ?? DEFAULT_PAGE_SIZE) - 1
+    baseQuery = baseQuery.range(offset, end)
   }
   if (parsed.sorts) {
     parsed.sorts.forEach((sort) => {
@@ -146,7 +163,7 @@ export const supabaseQueryFn = async (
 
   if (parsed.filters) {
     ;[...parsed.filters, ...cursorFilters].forEach((filter) => {
-      buildQuery(baseQuery, filter)
+      baseQuery = buildQuery(baseQuery, filter)
     })
   }
 
