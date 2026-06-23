@@ -13,6 +13,8 @@ A [TanStack DB](https://tanstack.com/db/latest) collection adapter backed by [Su
 
 Your Supabase database remains the source of truth. Postgres, RLS, Auth, and the rest of your stack stay unchanged. This is a frontend data layer that plugs into what you already have, with no migration required.
 
+You can see an example Todo app using this library at https://todomvc-supabase-tanstack-db.vercel.app/.
+
 ## Prerequisites
 
 You need an existing Supabase project with the client library and environment variables configured. If you have not set that up yet, follow the [Supabase getting started guide](https://supabase.com/docs/guides/getting-started).
