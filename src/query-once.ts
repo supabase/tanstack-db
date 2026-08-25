@@ -9,6 +9,7 @@ import {
   type QueryBuilder,
   queryOnce as queryOnceBase,
 } from "@tanstack/db"
+import { quoteValue } from "./functions"
 import {
   type SerializedExpression,
   type SerializedFrom,
@@ -313,31 +314,41 @@ function renderEmbedNode(node: EmbedNode): string {
 
 // ── Filter string conversion (for .or() and .not()) ────────────────
 
-/** Convert a comparison expression to a PostgREST filter string */
+/** Render an `in` list, quoting the members PostgREST would otherwise split on */
+function toInList(expr: SerializedExpression): string {
+  const values = extractValue(expr) as unknown[]
+  return `(${values.map(quoteValue).join(",")})`
+}
+
+/**
+ * Convert a comparison expression to a PostgREST filter string.
+ *
+ * These strings only ever land inside `or(…)` / `and(…)` / `not.…`, which
+ * PostgREST parses on `,` `(` `)` — so values are quoted here, unlike the
+ * top-level `column=op.value` form `applyFilter` builds through postgrest-js.
+ */
 function toFilterString(expr: SerializedExpression): string {
   if (expr.type !== "func") {
     throw new Error(`Expected func expression, got ${expr.type}`)
   }
 
+  const column = () => refToColumn(expr.args[0])
+  const value = () => quoteValue(extractValue(expr.args[1]))
+
   switch (expr.name) {
     case "eq":
-      return `${refToColumn(expr.args[0])}.eq.${extractValue(expr.args[1])}`
-    case "neq":
-      return `${refToColumn(expr.args[0])}.neq.${extractValue(expr.args[1])}`
     case "gt":
-      return `${refToColumn(expr.args[0])}.gt.${extractValue(expr.args[1])}`
     case "gte":
-      return `${refToColumn(expr.args[0])}.gte.${extractValue(expr.args[1])}`
     case "lt":
-      return `${refToColumn(expr.args[0])}.lt.${extractValue(expr.args[1])}`
     case "lte":
-      return `${refToColumn(expr.args[0])}.lte.${extractValue(expr.args[1])}`
+    case "like":
+    case "ilike":
+      return `${column()}.${expr.name}.${value()}`
     case "isNull":
-      return `${refToColumn(expr.args[0])}.is.null`
-    case "inArray": {
-      const values = extractValue(expr.args[1]) as unknown[]
-      return `${refToColumn(expr.args[0])}.in.(${values.join(",")})`
-    }
+      return `${column()}.is.null`
+    // `inArray()` builds a func named `in`, not `inArray`.
+    case "in":
+      return `${column()}.in.${toInList(expr.args[1])}`
     case "not":
       return toNotFilterString(expr.args[0])
     case "and":
@@ -354,27 +365,25 @@ function toNotFilterString(expr: SerializedExpression): string {
   if (expr.type !== "func") {
     throw new Error(`Expected func inside not, got ${expr.type}`)
   }
+
+  const column = () => refToColumn(expr.args[0])
+  const value = () => quoteValue(extractValue(expr.args[1]))
+
   switch (expr.name) {
     case "eq":
-      return `${refToColumn(expr.args[0])}.not.eq.${extractValue(expr.args[1])}`
-    case "neq":
-      return `${refToColumn(expr.args[0])}.not.neq.${extractValue(expr.args[1])}`
     case "gt":
-      return `${refToColumn(expr.args[0])}.not.gt.${extractValue(expr.args[1])}`
     case "gte":
-      return `${refToColumn(expr.args[0])}.not.gte.${extractValue(expr.args[1])}`
     case "lt":
-      return `${refToColumn(expr.args[0])}.not.lt.${extractValue(expr.args[1])}`
     case "lte":
-      return `${refToColumn(expr.args[0])}.not.lte.${extractValue(expr.args[1])}`
+    case "like":
+    case "ilike":
+      return `${column()}.not.${expr.name}.${value()}`
     case "isNull":
-      return `${refToColumn(expr.args[0])}.not.is.null`
-    case "inArray": {
-      const values = extractValue(expr.args[1]) as unknown[]
-      return `${refToColumn(expr.args[0])}.not.in.(${values.join(",")})`
-    }
+      return `${column()}.not.is.null`
+    case "in":
+      return `${column()}.not.in.${toInList(expr.args[1])}`
     default:
-      return `${refToColumn(expr.args[0])}.not.${expr.name}.${extractValue(expr.args[1])}`
+      return `${column()}.not.${expr.name}.${value()}`
   }
 }
 
@@ -393,8 +402,6 @@ function applyFilter(
   switch (expr.name) {
     case "eq":
       return query.eq(refToColumn(expr.args[0]), extractValue(expr.args[1]))
-    case "neq":
-      return query.neq(refToColumn(expr.args[0]), extractValue(expr.args[1]))
     case "gt":
       return query.gt(refToColumn(expr.args[0]), extractValue(expr.args[1]))
     case "gte":
@@ -403,9 +410,19 @@ function applyFilter(
       return query.lt(refToColumn(expr.args[0]), extractValue(expr.args[1]))
     case "lte":
       return query.lte(refToColumn(expr.args[0]), extractValue(expr.args[1]))
+    case "like":
+      return query.like(
+        refToColumn(expr.args[0]),
+        extractValue(expr.args[1]) as string
+      )
+    case "ilike":
+      return query.ilike(
+        refToColumn(expr.args[0]),
+        extractValue(expr.args[1]) as string
+      )
     case "isNull":
       return query.is(refToColumn(expr.args[0]), null)
-    case "inArray":
+    case "in":
       return query.in(
         refToColumn(expr.args[0]),
         extractValue(expr.args[1]) as unknown[]
@@ -442,10 +459,16 @@ function applyNotFilter(
         "eq",
         extractValue(inner.args[1]) as string
       )
-    case "neq":
+    case "like":
       return query.not(
         refToColumn(inner.args[0]),
-        "neq",
+        "like",
+        extractValue(inner.args[1]) as string
+      )
+    case "ilike":
+      return query.not(
+        refToColumn(inner.args[0]),
+        "ilike",
         extractValue(inner.args[1]) as string
       )
     case "gt":
@@ -474,14 +497,12 @@ function applyNotFilter(
       )
     case "isNull":
       return query.not(refToColumn(inner.args[0]), "is", null as any)
-    case "inArray": {
-      const values = extractValue(inner.args[1]) as unknown[]
+    case "in":
       return query.not(
         refToColumn(inner.args[0]),
         "in",
-        `(${values.join(",")})` as any
+        toInList(inner.args[1]) as any
       )
-    }
     default:
       return query.not(
         refToColumn(inner.args[0]),
@@ -499,7 +520,7 @@ function applyNotFilter(
  * Pushes to PostgREST:
  * - **select**: column refs, aggregates (count/sum/avg/min/max)
  * - **joins**: resource embedding with `!inner` / `!left` hints
- * - **where**: eq, neq, gt, gte, lt, lte, isNull, inArray, not, and, or
+ * - **where**: eq, gt, gte, lt, lte, like, ilike, isNull, in, not, and, or
  * - **orderBy**: real column refs (skips computed/$selected)
  * - **limit / offset**
  *
