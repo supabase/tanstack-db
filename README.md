@@ -176,8 +176,9 @@ Most query operations are translated to PostgREST filters and run server-side. A
 | Operation                                            | Notes                                                                             |
 | ---------------------------------------------------- | --------------------------------------------------------------------------------- |
 | `FROM`                                               | Maps to the PostgREST table endpoint.                                             |
-| `WHERE` (`eq`, `gt`, `gte`, `lt`, `lte`, `inArray`, `not`, `isNull`) | Translated to PostgREST filter syntax.                          |
-| `AND` (multiple conditions or chained `.where`)      | Translated to PostgREST filter syntax.                                            |
+| `WHERE` (`eq`, `gt`, `gte`, `lt`, `lte`, `inArray`, `like`, `ilike`, `not`, `isNull`) | Translated to PostgREST filter syntax.          |
+| `AND` (multiple conditions or chained `.where`)      | Translated to PostgREST filter syntax. A conjunct that cannot be pushed is dropped on its own; the request returns a superset and the client re-filters it. |
+| `OR` and nested `AND`/`OR`                           | Translated to PostgREST's `or=(…)` syntax. All-or-nothing: if any branch cannot be pushed the whole `or` is dropped, because dropping one branch would narrow the result and lose matching rows. |
 | `ORDER BY` (on source columns)                       | Translated to PostgREST filter syntax.                                            |
 | `LIMIT`                                              | Translated to PostgREST filter syntax.                                            |
 | `JOIN`                                               | Each table is fetched separately. The join key is pushed as an `in` filter on the second query. |
@@ -215,4 +216,3 @@ This library targets Supabase and PostgREST tables. For custom backends, write y
 ## Roadmap
 
 - Generate collection definitions from your database schema via the Supabase CLI, keeping them in sync as your schema evolves.
-- Add `OR` conditions and nested `AND`/`OR` support.

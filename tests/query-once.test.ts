@@ -9,9 +9,11 @@ import {
   eq,
   gt,
   gte,
+  ilike,
   inArray,
   isNull,
   length,
+  like,
   lower,
   lt,
   lte,
@@ -224,7 +226,7 @@ describe("queryOnce PostgREST query generation", () => {
       ])
     })
 
-    test.todo("OR: active = true OR id = 1", async () => {
+    test("OR: active = true OR id = 1", async () => {
       await queryOnce(
         (q) =>
           q
@@ -237,7 +239,7 @@ describe("queryOnce PostgREST query generation", () => {
       ])
     })
 
-    test.todo("nested AND/OR: active = true AND (id > 5 OR name = 'admin')", async () => {
+    test("nested AND/OR: active = true AND (id > 5 OR name = 'admin')", async () => {
       await queryOnce(
         (q) =>
           q
@@ -459,6 +461,104 @@ describe("queryOnce PostgREST query generation", () => {
       )
       expectFetchUrls(mockFetch, [
         "/rest/v1/users?select=totalUsers:id.count()&active=eq.true",
+      ])
+    })
+
+    // Only the aggregate / groupBy / having path reaches this package's own
+    // translator; every other query falls through to the collection loader.
+    test("aggregate with LIKE / ILIKE", async () => {
+      await queryOnce(
+        (q) =>
+          q
+            .from({ user: usersCollection })
+            .where(({ user }) => like(user.name, "%Ali%"))
+            .where(({ user }) => ilike(user.email, "%ali%"))
+            .select(({ user }) => ({ totalUsers: count(user.id) })),
+        supabase
+      )
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=totalUsers:id.count()&name=like.%25Ali%25&email=ilike.%25ali%25",
+      ])
+    })
+
+    test("aggregate with OR of ILIKEs", async () => {
+      await queryOnce(
+        (q) =>
+          q
+            .from({ user: usersCollection })
+            .where(({ user }) =>
+              or(ilike(user.name, "%ali%"), ilike(user.email, "%ali%"))
+            )
+            .select(({ user }) => ({ totalUsers: count(user.id) })),
+        supabase
+      )
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=totalUsers:id.count()&or=(name.ilike.%25ali%25,email.ilike.%25ali%25)",
+      ])
+    })
+
+    test("aggregate with nested AND/OR of ILIKEs", async () => {
+      await queryOnce(
+        (q) =>
+          q
+            .from({ user: usersCollection })
+            .where(({ user }) =>
+              and(
+                eq(user.active, true),
+                or(ilike(user.name, "%ali%"), ilike(user.email, "%ali%"))
+              )
+            )
+            .select(({ user }) => ({ totalUsers: count(user.id) })),
+        supabase
+      )
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=totalUsers:id.count()&active=eq.true&or=(name.ilike.%25ali%25,email.ilike.%25ali%25)",
+      ])
+    })
+
+    test("aggregate with an IN list inside an OR", async () => {
+      await queryOnce(
+        (q) =>
+          q
+            .from({ user: usersCollection })
+            .where(({ user }) =>
+              or(inArray(user.id, [1, 2, 3]), eq(user.active, true))
+            )
+            .select(({ user }) => ({ totalUsers: count(user.id) })),
+        supabase
+      )
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=totalUsers:id.count()&or=(id.in.(1,2,3),active.eq.true)",
+      ])
+    })
+
+    test("aggregate quotes values containing a comma", async () => {
+      await queryOnce(
+        (q) =>
+          q
+            .from({ user: usersCollection })
+            .where(({ user }) =>
+              or(ilike(user.name, "%a,b%"), eq(user.email, "x,y"))
+            )
+            .select(({ user }) => ({ totalUsers: count(user.id) })),
+        supabase
+      )
+      expectFetchUrls(mockFetch, [
+        '/rest/v1/users?select=totalUsers:id.count()&or=(name.ilike."%25a,b%25",email.eq."x,y")',
+      ])
+    })
+
+    test("aggregate with NOT(name LIKE …)", async () => {
+      await queryOnce(
+        (q) =>
+          q
+            .from({ user: usersCollection })
+            .where(({ user }) => not(like(user.name, "%Ali%")))
+            .select(({ user }) => ({ totalUsers: count(user.id) })),
+        supabase
+      )
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=totalUsers:id.count()&name=not.like.%25Ali%25",
       ])
     })
   })

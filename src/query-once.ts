@@ -9,6 +9,7 @@ import {
   type QueryBuilder,
   queryOnce as queryOnceBase,
 } from "@tanstack/db"
+import { applyPostgrestParams, toPostgrestParams } from "./postgrest-filters"
 import { CLIENT_INFO, CLIENT_INFO_HEADER } from "./request-headers"
 import {
   type SerializedExpression,
@@ -30,14 +31,6 @@ function refToColumn(expr: SerializedExpression): string {
     throw new Error(`Expected ref expression, got ${expr.type}`)
   }
   return expr.path.slice(1).join(".")
-}
-
-/** Extract literal value from a val expression */
-function extractValue(expr: SerializedExpression): unknown {
-  if (expr.type !== "val") {
-    throw new Error(`Expected val expression, got ${expr.type}`)
-  }
-  return expr.value
 }
 
 /** Unwrap a SerializedWhere to its expression */
@@ -312,186 +305,6 @@ function renderEmbedNode(node: EmbedNode): string {
   return `${node.tableName}${hintStr}${typeStr}(${innerParts.join(", ")})`
 }
 
-// ── Filter string conversion (for .or() and .not()) ────────────────
-
-/** Convert a comparison expression to a PostgREST filter string */
-function toFilterString(expr: SerializedExpression): string {
-  if (expr.type !== "func") {
-    throw new Error(`Expected func expression, got ${expr.type}`)
-  }
-
-  switch (expr.name) {
-    case "eq":
-      return `${refToColumn(expr.args[0])}.eq.${extractValue(expr.args[1])}`
-    case "neq":
-      return `${refToColumn(expr.args[0])}.neq.${extractValue(expr.args[1])}`
-    case "gt":
-      return `${refToColumn(expr.args[0])}.gt.${extractValue(expr.args[1])}`
-    case "gte":
-      return `${refToColumn(expr.args[0])}.gte.${extractValue(expr.args[1])}`
-    case "lt":
-      return `${refToColumn(expr.args[0])}.lt.${extractValue(expr.args[1])}`
-    case "lte":
-      return `${refToColumn(expr.args[0])}.lte.${extractValue(expr.args[1])}`
-    case "isNull":
-      return `${refToColumn(expr.args[0])}.is.null`
-    case "inArray": {
-      const values = extractValue(expr.args[1]) as unknown[]
-      return `${refToColumn(expr.args[0])}.in.(${values.join(",")})`
-    }
-    case "not":
-      return toNotFilterString(expr.args[0])
-    case "and":
-      return `and(${expr.args.map(toFilterString).join(",")})`
-    case "or":
-      return `or(${expr.args.map(toFilterString).join(",")})`
-    default:
-      throw new Error(`Unsupported operator in filter string: ${expr.name}`)
-  }
-}
-
-/** Convert the inner expression of a NOT to a negated PostgREST filter string */
-function toNotFilterString(expr: SerializedExpression): string {
-  if (expr.type !== "func") {
-    throw new Error(`Expected func inside not, got ${expr.type}`)
-  }
-  switch (expr.name) {
-    case "eq":
-      return `${refToColumn(expr.args[0])}.not.eq.${extractValue(expr.args[1])}`
-    case "neq":
-      return `${refToColumn(expr.args[0])}.not.neq.${extractValue(expr.args[1])}`
-    case "gt":
-      return `${refToColumn(expr.args[0])}.not.gt.${extractValue(expr.args[1])}`
-    case "gte":
-      return `${refToColumn(expr.args[0])}.not.gte.${extractValue(expr.args[1])}`
-    case "lt":
-      return `${refToColumn(expr.args[0])}.not.lt.${extractValue(expr.args[1])}`
-    case "lte":
-      return `${refToColumn(expr.args[0])}.not.lte.${extractValue(expr.args[1])}`
-    case "isNull":
-      return `${refToColumn(expr.args[0])}.not.is.null`
-    case "inArray": {
-      const values = extractValue(expr.args[1]) as unknown[]
-      return `${refToColumn(expr.args[0])}.not.in.(${values.join(",")})`
-    }
-    default:
-      return `${refToColumn(expr.args[0])}.not.${expr.name}.${extractValue(expr.args[1])}`
-  }
-}
-
-// ── Filter application ──────────────────────────────────────────────
-
-/** Apply a single where expression to a Supabase query builder */
-function applyFilter(
-  query: SupabaseQuery,
-  expr: SerializedExpression
-): SupabaseQuery {
-  if (expr.type !== "func") {
-    console.warn(`Cannot push non-func expression to PostgREST: ${expr.type}`)
-    return query
-  }
-
-  switch (expr.name) {
-    case "eq":
-      return query.eq(refToColumn(expr.args[0]), extractValue(expr.args[1]))
-    case "neq":
-      return query.neq(refToColumn(expr.args[0]), extractValue(expr.args[1]))
-    case "gt":
-      return query.gt(refToColumn(expr.args[0]), extractValue(expr.args[1]))
-    case "gte":
-      return query.gte(refToColumn(expr.args[0]), extractValue(expr.args[1]))
-    case "lt":
-      return query.lt(refToColumn(expr.args[0]), extractValue(expr.args[1]))
-    case "lte":
-      return query.lte(refToColumn(expr.args[0]), extractValue(expr.args[1]))
-    case "isNull":
-      return query.is(refToColumn(expr.args[0]), null)
-    case "inArray":
-      return query.in(
-        refToColumn(expr.args[0]),
-        extractValue(expr.args[1]) as unknown[]
-      )
-    case "not":
-      return applyNotFilter(query, expr.args[0])
-    case "and":
-      // AND is implicit in PostgREST — apply each filter sequentially
-      for (const arg of expr.args) {
-        query = applyFilter(query, arg)
-      }
-      return query
-    case "or":
-      return query.or(expr.args.map(toFilterString).join(","))
-    default:
-      console.warn(`Unsupported operator for PostgREST: ${expr.name}`)
-      return query
-  }
-}
-
-/** Apply a NOT(inner) filter to a Supabase query builder */
-function applyNotFilter(
-  query: SupabaseQuery,
-  inner: SerializedExpression
-): SupabaseQuery {
-  if (inner.type !== "func") {
-    console.warn(`Cannot push non-func inside not to PostgREST`)
-    return query
-  }
-  switch (inner.name) {
-    case "eq":
-      return query.not(
-        refToColumn(inner.args[0]),
-        "eq",
-        extractValue(inner.args[1]) as string
-      )
-    case "neq":
-      return query.not(
-        refToColumn(inner.args[0]),
-        "neq",
-        extractValue(inner.args[1]) as string
-      )
-    case "gt":
-      return query.not(
-        refToColumn(inner.args[0]),
-        "gt",
-        extractValue(inner.args[1]) as string
-      )
-    case "gte":
-      return query.not(
-        refToColumn(inner.args[0]),
-        "gte",
-        extractValue(inner.args[1]) as string
-      )
-    case "lt":
-      return query.not(
-        refToColumn(inner.args[0]),
-        "lt",
-        extractValue(inner.args[1]) as string
-      )
-    case "lte":
-      return query.not(
-        refToColumn(inner.args[0]),
-        "lte",
-        extractValue(inner.args[1]) as string
-      )
-    case "isNull":
-      return query.not(refToColumn(inner.args[0]), "is", null as any)
-    case "inArray": {
-      const values = extractValue(inner.args[1]) as unknown[]
-      return query.not(
-        refToColumn(inner.args[0]),
-        "in",
-        `(${values.join(",")})` as any
-      )
-    }
-    default:
-      return query.not(
-        refToColumn(inner.args[0]),
-        inner.name as any,
-        extractValue(inner.args[1]) as any
-      )
-  }
-}
-
 // ── Query building ──────────────────────────────────────────────────
 
 /**
@@ -500,7 +313,7 @@ function applyNotFilter(
  * Pushes to PostgREST:
  * - **select**: column refs, aggregates (count/sum/avg/min/max)
  * - **joins**: resource embedding with `!inner` / `!left` hints
- * - **where**: eq, neq, gt, gte, lt, lte, isNull, inArray, not, and, or
+ * - **where**: eq, gt, gte, lt, lte, like, ilike, isNull, in, not, and, or
  * - **orderBy**: real column refs (skips computed/$selected)
  * - **limit / offset**
  *
@@ -524,7 +337,10 @@ export function buildSupabaseQuery(
   // Apply pushable where filters (skip residual / client-side filters)
   for (const w of allWheres) {
     if (isResidual(w)) continue
-    query = applyFilter(query, getExpression(w))
+    query = applyPostgrestParams(
+      query,
+      toPostgrestParams(getExpression(w), { stripAlias: true, strict: true })
+    )
   }
 
   // Apply order by (only real column refs, skip computed/$selected refs)
