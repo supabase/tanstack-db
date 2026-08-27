@@ -12,6 +12,7 @@ import {
   type UpdateMutationFnParams,
 } from "@tanstack/db"
 import type { QueryClient, QueryMeta } from "@tanstack/query-core"
+import { CLIENT_INFO, CLIENT_INFO_HEADER } from "./request-headers"
 
 const buildQuery = (
   baseQuery: PostgrestFilterBuilder<any, any, any, any>,
@@ -127,7 +128,10 @@ export const supabaseQueryFn = async (
   // console.log(tableName, parsed);
   // console.log(tableName, cursorFilters);
 
-  let baseQuery = supabase.from(tableName).select("*")
+  let baseQuery = supabase
+    .from(tableName)
+    .select("*")
+    .setHeader(CLIENT_INFO_HEADER, CLIENT_INFO)
 
   if (parsed.limit) {
     baseQuery = baseQuery.limit(parsed.limit)
@@ -170,6 +174,7 @@ export const supabaseOnInsert = async (
         .insert({
           ...mutation.modified,
         })
+        .setHeader(CLIENT_INFO_HEADER, CLIENT_INFO)
         .select()
         .single()
 
@@ -198,10 +203,13 @@ export const supabaseOnUpdate = async (
     transaction.mutations.map(async (mutation) => {
       const { original, changes } = mutation
       const { error, data } = await filter(
-        supabase.from(tableName).update({
-          ...original,
-          ...changes,
-        }),
+        supabase
+          .from(tableName)
+          .update({
+            ...original,
+            ...changes,
+          })
+          .setHeader(CLIENT_INFO_HEADER, CLIENT_INFO),
         mutation.original
       )
         .select()
@@ -230,7 +238,10 @@ export const supabaseOnDelete = async (
   await Promise.all(
     transaction.mutations.map(async (mutation) => {
       const { error } = await filter(
-        supabase.from(tableName).delete(),
+        supabase
+          .from(tableName)
+          .delete()
+          .setHeader(CLIENT_INFO_HEADER, CLIENT_INFO),
         mutation.original
       )
 
