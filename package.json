@@ -28,14 +28,14 @@
     "dev": "tsdown --watch",
     "test": "vitest",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "pnpm run build",
+    "prepublishOnly": "pnpm run test && pnpm run build",
     "check": "ultracite check",
     "fix": "ultracite fix"
   },
   "dependencies": {
     "@standard-schema/spec": "^1.1.0",
     "@supabase/postgrest-js": "^2.0.0",
-    "@supabase/supabase-js": "^2.0.0",
+    "@supabase/supabase-js": "^2.74.0",
     "@tanstack/db": "^0.6.0",
     "@tanstack/query-core": "^5.0.0",
     "@tanstack/query-db-collection": "^1.0.0"
