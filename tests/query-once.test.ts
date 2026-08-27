@@ -22,14 +22,16 @@ import {
   sum,
   upper,
 } from "@tanstack/db"
-import { afterEach, beforeEach, describe, test } from "vitest"
+import { afterEach, beforeEach, describe, expect, test } from "vitest"
 import { queryOnce } from "../src/index"
+import { VERSION } from "../src/version"
 import {
   createMockedTodosCollection,
   createMockedUsersCollection,
   createMockedUsersTodosCollection,
   createMockFetch,
   expectFetchUrls,
+  getRequestHeaders,
   SUPABASE_KEY,
   SUPABASE_URL,
 } from "./test.utils"
@@ -61,6 +63,15 @@ describe("queryOnce PostgREST query generation", () => {
     test("SELECT * FROM users", async () => {
       await queryOnce((q) => q.from({ user: usersCollection }), supabase)
       expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+    })
+  })
+
+  describe("automatic X-Client-Info header", () => {
+    test("is present on the request", async () => {
+      await queryOnce((q) => q.from({ user: usersCollection }), supabase)
+      expect(getRequestHeaders(mockFetch, 0).get("x-client-info")).toBe(
+        `@supabase-labs/tanstack-db/${VERSION}`
+      )
     })
   })
 
