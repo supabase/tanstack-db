@@ -132,11 +132,69 @@ describe("PostgREST query generation", () => {
       ])
     })
 
+    test("WHERE NOT(id > 5)", async () => {
+      await queryResult((q) =>
+        q
+          .from({ user: usersCollection })
+          .where(({ user }) => not(gt(user.id, 5)))
+      )
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=not.gt.5"])
+    })
+
+    test("WHERE NOT(id IN (1, 2))", async () => {
+      await queryResult((q) =>
+        q
+          .from({ user: usersCollection })
+          .where(({ user }) => not(inArray(user.id, [1, 2])))
+      )
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=not.in.(1,2)"])
+    })
+
+    test("a Date value is sent as ISO 8601", async () => {
+      await queryResult((q) =>
+        q
+          .from({ user: usersCollection })
+          .where(({ user }) =>
+            gt(user.name, new Date("2026-01-02T03:04:05.000Z") as never)
+          )
+      )
+      // `Date.toString()` would produce something Postgres cannot cast.
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&name=gt.2026-01-02T03:04:05.000Z",
+      ])
+    })
+
     test("WHERE name IS NULL", async () => {
       await queryResult((q) =>
         q.from({ user: usersCollection }).where(({ user }) => isNull(user.name))
       )
       expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&name=is.null"])
+    })
+
+    test("WHERE NOT(name IS NULL)", async () => {
+      await queryResult((q) =>
+        q
+          .from({ user: usersCollection })
+          .where(({ user }) => not(isNull(user.name)))
+      )
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&name=not.is.null"])
+    })
+
+    test("a negated condition does not reuse the cache entry of the plain one", async () => {
+      await queryResult((q) =>
+        q.from({ user: usersCollection }).where(({ user }) => gt(user.id, 5))
+      )
+      await queryResult((q) =>
+        q
+          .from({ user: usersCollection })
+          .where(({ user }) => not(gt(user.id, 5)))
+      )
+      // Two fetches, not one: a shared query key would have served the second
+      // query the first query's rows.
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&id=gt.5",
+        "/rest/v1/users?select=*&id=not.gt.5",
+      ])
     })
 
     test("AND: active = true AND id > 5", async () => {

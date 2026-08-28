@@ -13,6 +13,7 @@ import {
   supabaseQueryFn,
 } from "./functions"
 import { getQueryClient } from "./query-client"
+import { attachSupabaseListeners, buildRealtimeFilters } from "./realtime"
 
 type GenericPostgrestFilterBuilder = PostgrestFilterBuilder<any, any, any, any>
 
@@ -38,7 +39,25 @@ interface SupabaseCollectionOptions<TSchema extends StandardSchemaV1> {
 interface TableEntry {
   collectionRef: Collection<any, any> | null
   realtimeChannel: ReturnType<SupabaseClient["channel"]> | null
+  /** Serialized set of Realtime filters the current channel was subscribed with */
+  realtimeFiltersKey: string | null
+  /** Resolves once the current channel finished subscribing (or gave up) */
+  realtimeSubscribed: Promise<void> | null
   supabase: SupabaseClient
+}
+
+/**
+ * Channel topics are namespaced and numbered because `supabase.channel()`
+ * returns the *existing* channel for a topic that is already registered, and
+ * subscribing to an already-joined channel throws. Reusing the table name would
+ * hand back the channel currently being torn down, and could collide with a
+ * channel the application opened itself or with another QueryClient sharing the
+ * same Supabase client — so the counter is module-level, not per table.
+ */
+let channelCount = 0
+const nextChannelTopic = (tableName: string) => {
+  channelCount += 1
+  return `supabase-tanstack-db:${tableName}:${channelCount}`
 }
 
 // Per-QueryClient registry of table entries, with a single cache subscription per client
@@ -62,15 +81,58 @@ const ensureQueryCacheSubscription = (queryClient: QueryClient) => {
         type: "active",
       })
 
-      if (queries.length > 0 && !entry.realtimeChannel && entry.collectionRef) {
-        entry.realtimeChannel = attachSupabaseListeners(
-          entry.supabase,
-          tableName,
-          entry.collectionRef
-        )
-      } else if (queries.length === 0 && entry.realtimeChannel) {
-        entry.supabase.removeChannel(entry.realtimeChannel)
-        entry.realtimeChannel = null
+      // No active queries: tear down any existing subscription.
+      if (queries.length === 0) {
+        if (entry.realtimeChannel) {
+          entry.supabase.removeChannel(entry.realtimeChannel)
+          entry.realtimeChannel = null
+          entry.realtimeFiltersKey = null
+          entry.realtimeSubscribed = null
+        }
+        continue
+      }
+
+      if (!entry.collectionRef) {
+        continue
+      }
+
+      // Derive the Realtime filters from the WHERE clause of every active query
+      // so the subscription only receives changes that those queries care about.
+      const whereExpressions = queries.map(
+        (query) => query.meta?.loadSubsetOptions?.where
+      )
+      const filters = buildRealtimeFilters(whereExpressions)
+      const filtersKey = JSON.stringify(filters)
+
+      // Reuse the existing channel when the set of filters hasn't changed.
+      if (entry.realtimeChannel && entry.realtimeFiltersKey === filtersKey) {
+        continue
+      }
+
+      // Filters changed (or no channel yet): subscribe with the new filters.
+      const previousChannel = entry.realtimeChannel
+      const subscription = attachSupabaseListeners(
+        entry.supabase,
+        nextChannelTopic(tableName),
+        tableName,
+        entry.collectionRef,
+        filters
+      )
+      entry.realtimeChannel = subscription?.channel ?? null
+      entry.realtimeFiltersKey = subscription ? filtersKey : null
+      entry.realtimeSubscribed = subscription?.subscribed ?? null
+
+      // Keep the previous channel listening until its replacement is
+      // subscribed, so no change slips through while the swap is in flight.
+      if (previousChannel) {
+        const removePrevious = () => {
+          entry.supabase.removeChannel(previousChannel)
+        }
+        if (subscription) {
+          subscription.subscribed.then(removePrevious, removePrevious)
+        } else {
+          removePrevious()
+        }
       }
     }
   })
@@ -90,6 +152,8 @@ const registerTable = (
       supabase,
       collectionRef: null,
       realtimeChannel: null,
+      realtimeFiltersKey: null,
+      realtimeSubscribed: null,
     })
   }
 
@@ -140,7 +204,16 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
     schema,
     queryKey: (ctx) => subsetOptionsToQueryKey(tableName, ctx),
     syncMode: "on-demand",
-    queryFn: (ctx) => supabaseQueryFn(supabase, tableName, ctx),
+    queryFn: async (ctx) => {
+      // The channel is attached when the query's observer is added, which
+      // happens before this runs. Waiting for it means a row written between
+      // the fetch and the subscription arrives over Realtime instead of being
+      // missed by both.
+      if (entry?.realtimeSubscribed) {
+        await entry.realtimeSubscribed
+      }
+      return await supabaseQueryFn(supabase, tableName, ctx)
+    },
     onInsert: (ctx) => supabaseOnInsert(supabase, tableName, ctx),
     onUpdate: (ctx) => supabaseOnUpdate(supabase, tableName, where, ctx),
     onDelete: (ctx) => supabaseOnDelete(supabase, tableName, where, ctx),
@@ -163,40 +236,4 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
       },
     },
   }
-}
-
-export const attachSupabaseListeners = <
-  T extends object,
-  TKey extends string | number,
->(
-  supabase: SupabaseClient,
-  tableName: string,
-  collection: Collection<T, TKey>
-): ReturnType<SupabaseClient["channel"]> | null => {
-  if (!supabase.channel) {
-    console.log("Server supabase doesn't have a channel")
-    return null
-  }
-
-  const channel = supabase.channel(tableName)
-  channel
-    .on<T>(
-      "postgres_changes",
-      { event: "*", schema: "public", table: tableName },
-      (payload) => {
-        if (payload.eventType === "INSERT") {
-          collection.utils.writeInsert(payload.new)
-        } else if (payload.eventType === "UPDATE") {
-          collection.utils.writeUpdate(payload.new)
-        } else if (payload.eventType === "DELETE") {
-          const id = collection.getKeyFromItem(payload.old as T)
-          if (collection.has(id)) {
-            collection.utils.writeDelete(id)
-          }
-        }
-      }
-    )
-    .subscribe()
-
-  return channel
 }
