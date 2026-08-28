@@ -9,6 +9,7 @@ import {
   type QueryBuilder,
   queryOnce as queryOnceBase,
 } from "@tanstack/db"
+import { CLIENT_INFO, CLIENT_INFO_HEADER } from "./request-headers"
 import {
   type SerializedExpression,
   type SerializedFrom,
@@ -515,7 +516,10 @@ export function buildSupabaseQuery(
   const allWheres = [...subqueryWheres, ...(ir.where ?? [])]
 
   const selectString = buildSelectString(ir)
-  let query: SupabaseQuery = supabase.from(tableName).select(selectString)
+  let query: SupabaseQuery = supabase
+    .from(tableName)
+    .select(selectString)
+    .setHeader(CLIENT_INFO_HEADER, CLIENT_INFO)
 
   // Apply pushable where filters (skip residual / client-side filters)
   for (const w of allWheres) {
