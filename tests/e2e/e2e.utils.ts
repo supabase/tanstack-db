@@ -1,6 +1,6 @@
 import type { StandardSchemaV1 } from "@standard-schema/spec"
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
-import { createCollection } from "@tanstack/db"
+import { createCollection, liveQueryCollectionOptions } from "@tanstack/db"
 import { QueryClient } from "@tanstack/query-core"
 import { supabaseCollectionOptions } from "../../src/index"
 import { todosSchema, usersSchema, usersTodosSchema } from "../test.utils"
@@ -71,3 +71,28 @@ export const makeUsersTodosCollection = (options: CollectionOptions = {}) =>
     usersTodosSchema,
     options
   )
+
+// Shared polling window for awaiting async PostgREST/realtime propagation.
+export const WAIT = { timeout: 15_000, interval: 200 } as const
+
+export type UsersCollection = ReturnType<
+  typeof makeUsersCollection
+>["collection"]
+
+// An on-demand collection only loads when a live query drives demand. This live
+// query also creates the active query that the realtime channel attaches to, so
+// tests subscribe through it and read the results back from `live`.
+export const liveUsers = (base: UsersCollection) => {
+  const options = liveQueryCollectionOptions({
+    query: (q) =>
+      q.from({ row: base }).select(({ row }) => ({
+        id: row.id,
+        name: row.name,
+        email: row.email,
+        active: row.active,
+      })),
+  })
+  return createCollection(
+    options as Extract<typeof options, { singleResult?: never }>
+  )
+}

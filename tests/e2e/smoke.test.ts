@@ -1,27 +1,5 @@
-import { createCollection, liveQueryCollectionOptions } from "@tanstack/db"
 import { expect, test, vi } from "vitest"
-import { makeSupabase, makeUsersCollection } from "./e2e.utils"
-
-const WAIT = { timeout: 15_000, interval: 200 } as const
-
-type UsersCollection = ReturnType<typeof makeUsersCollection>["collection"]
-
-// An on-demand collection only loads when a live query drives demand. This live
-// query also creates the active query that the realtime channel attaches to.
-const liveUsers = (base: UsersCollection) => {
-  const options = liveQueryCollectionOptions({
-    query: (q) =>
-      q.from({ row: base }).select(({ row }) => ({
-        id: row.id,
-        name: row.name,
-        email: row.email,
-        active: row.active,
-      })),
-  })
-  return createCollection(
-    options as Extract<typeof options, { singleResult?: never }>
-  )
-}
+import { liveUsers, makeSupabase, makeUsersCollection, WAIT } from "./e2e.utils"
 
 test("reads seeded rows through PostgREST", async () => {
   const { collection } = makeUsersCollection()
