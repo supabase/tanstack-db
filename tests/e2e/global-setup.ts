@@ -11,12 +11,12 @@ const STOP_TIMEOUT_MS = 120_000
 
 // Realtime warm-up: a freshly started realtime container needs a moment before
 // its Postgres replication is fully wired, so the first subscription can miss
-// changes. We subscribe and repeatedly insert a sentinel row until an event is
-// actually delivered, guaranteeing realtime is live before any test runs.
+// changes. We subscribe to the dedicated e2e_warmup scratch table and upsert
+// rows into it until an event is actually delivered, guaranteeing realtime is
+// live before any test runs — without ever touching the tables tests read.
 const WARMUP_TIMEOUT_MS = 60_000
 const WARMUP_ATTEMPTS = 40
 const WARMUP_POKE_INTERVAL_MS = 1000
-const WARMUP_SENTINEL_ID = 2_000_000_000
 
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => {
@@ -52,7 +52,15 @@ const readStatus = async (): Promise<SupabaseStatus | null> => {
       STOP_TIMEOUT_MS
     )
     return JSON.parse(stdout) as SupabaseStatus
-  } catch {
+  } catch (error) {
+    // A missing pnpm/CLI binary is a setup problem, not a stopped stack —
+    // surface it instead of falling through to a confusing `supabase start`.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(
+        "Could not run `pnpm exec supabase` — is pnpm on PATH and did you run `pnpm install`?"
+      )
+    }
+    // Non-zero exit (stack not running) or non-JSON output: treat as no stack.
     return null
   }
 }
@@ -61,16 +69,12 @@ const warmUpRealtime = async (url: string, anonKey: string): Promise<void> => {
   const client = createClient(url, anonKey)
   let received = false
 
-  // supabase-js insert resolves with { error } instead of throwing, so failed
-  // pokes (e.g. a leftover sentinel) are simply retried on the next attempt.
+  // Upserts never conflict with rows left over from a previous run of the same
+  // stack, and every upsert produces a WAL change (INSERT or UPDATE) for the
+  // listener below. supabase-js resolves with { error } instead of throwing.
   const poke = async (): Promise<void> => {
     for (let attempt = 0; attempt < WARMUP_ATTEMPTS && !received; attempt++) {
-      await client.from("users").insert({
-        id: WARMUP_SENTINEL_ID + attempt,
-        name: "warmup",
-        email: `warmup-${attempt}@e2e.local`,
-        active: true,
-      })
+      await client.from("e2e_warmup").upsert({ id: attempt })
       await delay(WARMUP_POKE_INTERVAL_MS)
     }
   }
@@ -90,7 +94,7 @@ const warmUpRealtime = async (url: string, anonKey: string): Promise<void> => {
         .channel("e2e-warmup")
         .on(
           "postgres_changes",
-          { event: "INSERT", schema: "public", table: "users" },
+          { event: "*", schema: "public", table: "e2e_warmup" },
           () => {
             received = true
             clearTimeout(timer)
@@ -105,7 +109,6 @@ const warmUpRealtime = async (url: string, anonKey: string): Promise<void> => {
     })
   } finally {
     await client.removeAllChannels()
-    await client.from("users").delete().gte("id", WARMUP_SENTINEL_ID)
   }
 }
 
