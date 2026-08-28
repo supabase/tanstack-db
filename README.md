@@ -192,10 +192,6 @@ These operations fetch the required rows and process them in memory:
 - `DISTINCT`
 - `ORDER BY` on computed fields
 
-**Request Identification**
-
-Every PostgREST request this library issues automatically includes an `X-Client-Info: @supabase-labs/tanstack-db/<version>` header, so it's identifiable alongside other Supabase client libraries. This is not configurable.
-
 ## FAQ
 
 **Will this work with my RLS policies?**
