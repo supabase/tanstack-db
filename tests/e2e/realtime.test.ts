@@ -42,8 +42,9 @@ test("receives realtime updates made by another client", async () => {
   await other.removeAllChannels()
 })
 
-// Exercises the delete path, which relies on REPLICA IDENTITY FULL so the
-// realtime payload carries the key columns in `old`.
+// Exercises the delete path, where the adapter derives the collection key from
+// the realtime payload's `old`. That works here because the collection key is
+// the primary key, which the default replica identity always includes.
 test("receives realtime deletes made by another client", async () => {
   const { collection, supabase } = makeUsersCollection({ realtime: true })
   const live = liveUsers(collection)
