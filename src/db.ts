@@ -41,7 +41,23 @@ interface TableEntry {
   realtimeChannel: ReturnType<SupabaseClient["channel"]> | null
   /** Serialized set of Realtime filters the current channel was subscribed with */
   realtimeFiltersKey: string | null
+  /** Resolves once the current channel finished subscribing (or gave up) */
+  realtimeSubscribed: Promise<void> | null
   supabase: SupabaseClient
+}
+
+/**
+ * Channel topics are namespaced and numbered because `supabase.channel()`
+ * returns the *existing* channel for a topic that is already registered, and
+ * subscribing to an already-joined channel throws. Reusing the table name would
+ * hand back the channel currently being torn down, and could collide with a
+ * channel the application opened itself or with another QueryClient sharing the
+ * same Supabase client — so the counter is module-level, not per table.
+ */
+let channelCount = 0
+const nextChannelTopic = (tableName: string) => {
+  channelCount += 1
+  return `supabase-tanstack-db:${tableName}:${channelCount}`
 }
 
 // Per-QueryClient registry of table entries, with a single cache subscription per client
@@ -71,6 +87,7 @@ const ensureQueryCacheSubscription = (queryClient: QueryClient) => {
           entry.supabase.removeChannel(entry.realtimeChannel)
           entry.realtimeChannel = null
           entry.realtimeFiltersKey = null
+          entry.realtimeSubscribed = null
         }
         continue
       }
@@ -92,17 +109,31 @@ const ensureQueryCacheSubscription = (queryClient: QueryClient) => {
         continue
       }
 
-      // Filters changed (or no channel yet): (re)subscribe with the new filters.
-      if (entry.realtimeChannel) {
-        entry.supabase.removeChannel(entry.realtimeChannel)
-      }
-      entry.realtimeChannel = attachSupabaseListeners(
+      // Filters changed (or no channel yet): subscribe with the new filters.
+      const previousChannel = entry.realtimeChannel
+      const subscription = attachSupabaseListeners(
         entry.supabase,
+        nextChannelTopic(tableName),
         tableName,
         entry.collectionRef,
         filters
       )
-      entry.realtimeFiltersKey = filtersKey
+      entry.realtimeChannel = subscription?.channel ?? null
+      entry.realtimeFiltersKey = subscription ? filtersKey : null
+      entry.realtimeSubscribed = subscription?.subscribed ?? null
+
+      // Keep the previous channel listening until its replacement is
+      // subscribed, so no change slips through while the swap is in flight.
+      if (previousChannel) {
+        const removePrevious = () => {
+          entry.supabase.removeChannel(previousChannel)
+        }
+        if (subscription) {
+          subscription.subscribed.then(removePrevious, removePrevious)
+        } else {
+          removePrevious()
+        }
+      }
     }
   })
 }
@@ -122,6 +153,7 @@ const registerTable = (
       collectionRef: null,
       realtimeChannel: null,
       realtimeFiltersKey: null,
+      realtimeSubscribed: null,
     })
   }
 
@@ -172,7 +204,16 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
     schema,
     queryKey: (ctx) => subsetOptionsToQueryKey(tableName, ctx),
     syncMode: "on-demand",
-    queryFn: (ctx) => supabaseQueryFn(supabase, tableName, ctx),
+    queryFn: async (ctx) => {
+      // The channel is attached when the query's observer is added, which
+      // happens before this runs. Waiting for it means a row written between
+      // the fetch and the subscription arrives over Realtime instead of being
+      // missed by both.
+      if (entry?.realtimeSubscribed) {
+        await entry.realtimeSubscribed
+      }
+      return await supabaseQueryFn(supabase, tableName, ctx)
+    },
     onInsert: (ctx) => supabaseOnInsert(supabase, tableName, ctx),
     onUpdate: (ctx) => supabaseOnUpdate(supabase, tableName, where, ctx),
     onDelete: (ctx) => supabaseOnDelete(supabase, tableName, where, ctx),

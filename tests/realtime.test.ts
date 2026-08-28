@@ -18,6 +18,9 @@ import {
   createMockChannel,
   createMockFetch,
   createRealtimeUsersCollection,
+  emit,
+  filtersFor,
+  listenersFor,
   type MockChannel,
 } from "./test.utils"
 
@@ -47,6 +50,16 @@ type RealtimeCollection = ReturnType<
   typeof createRealtimeUsersCollection
 >["collection"]
 
+function startLiveQuery(
+  collection: RealtimeCollection,
+  buildQuery: (collection: RealtimeCollection) => QueryFn
+) {
+  const opts = liveQueryCollectionOptions({ query: buildQuery(collection) })
+  return track(
+    createCollection(opts as Extract<typeof opts, { singleResult?: never }>)
+  )
+}
+
 // Runs a live query against a fresh realtime users collection and waits for the
 // realtime channel to be attached, then returns the recording mock channel.
 async function captureChannel(
@@ -57,10 +70,7 @@ async function captureChannel(
   const { collection } = createRealtimeUsersCollection(mockFetch, mockChannel)
   track(collection)
 
-  const opts = liveQueryCollectionOptions({ query: buildQuery(collection) })
-  const live = track(
-    createCollection(opts as Extract<typeof opts, { singleResult?: never }>)
-  )
+  const live = startLiveQuery(collection, buildQuery)
 
   await live.preload()
   await live.toArrayWhenReady()
@@ -69,10 +79,10 @@ async function captureChannel(
   return { mockChannel, collection }
 }
 
-// Maps the recorded postgres_changes listeners to their filter strings (null
-// when the listener is a catch-all with no `filter`).
-function realtimeFilters(mockChannel: MockChannel): Array<string | null> {
-  return mockChannel.onCalls.map((call) => call.config.filter ?? null)
+// The filters applied to INSERT listeners — the ones that decide which rows
+// belong in the collection.
+function insertFilters(mockChannel: MockChannel): Array<string | null> {
+  return filtersFor(mockChannel, "INSERT")
 }
 
 describe("realtime filter propagation", () => {
@@ -82,7 +92,7 @@ describe("realtime filter propagation", () => {
         (collection) => (q) =>
           q.from({ user: collection }).where(({ user }) => eq(user.id, 1))
       )
-      expect(realtimeFilters(mockChannel)).toEqual(["id=eq.1"])
+      expect(insertFilters(mockChannel)).toEqual(["id=eq.1"])
     })
 
     test("eq on a boolean column", async () => {
@@ -92,7 +102,7 @@ describe("realtime filter propagation", () => {
             .from({ user: collection })
             .where(({ user }) => eq(user.active, true))
       )
-      expect(realtimeFilters(mockChannel)).toEqual(["active=eq.true"])
+      expect(insertFilters(mockChannel)).toEqual(["active=eq.true"])
     })
 
     test("gt", async () => {
@@ -100,7 +110,7 @@ describe("realtime filter propagation", () => {
         (collection) => (q) =>
           q.from({ user: collection }).where(({ user }) => gt(user.id, 5))
       )
-      expect(realtimeFilters(mockChannel)).toEqual(["id=gt.5"])
+      expect(insertFilters(mockChannel)).toEqual(["id=gt.5"])
     })
 
     test("gte", async () => {
@@ -108,7 +118,7 @@ describe("realtime filter propagation", () => {
         (collection) => (q) =>
           q.from({ user: collection }).where(({ user }) => gte(user.id, 5))
       )
-      expect(realtimeFilters(mockChannel)).toEqual(["id=gte.5"])
+      expect(insertFilters(mockChannel)).toEqual(["id=gte.5"])
     })
 
     test("lt", async () => {
@@ -116,7 +126,7 @@ describe("realtime filter propagation", () => {
         (collection) => (q) =>
           q.from({ user: collection }).where(({ user }) => lt(user.id, 10))
       )
-      expect(realtimeFilters(mockChannel)).toEqual(["id=lt.10"])
+      expect(insertFilters(mockChannel)).toEqual(["id=lt.10"])
     })
 
     test("lte", async () => {
@@ -124,7 +134,7 @@ describe("realtime filter propagation", () => {
         (collection) => (q) =>
           q.from({ user: collection }).where(({ user }) => lte(user.id, 10))
       )
-      expect(realtimeFilters(mockChannel)).toEqual(["id=lte.10"])
+      expect(insertFilters(mockChannel)).toEqual(["id=lte.10"])
     })
 
     test("inArray maps to in.(...)", async () => {
@@ -134,7 +144,7 @@ describe("realtime filter propagation", () => {
             .from({ user: collection })
             .where(({ user }) => inArray(user.id, [1, 2, 3]))
       )
-      expect(realtimeFilters(mockChannel)).toEqual(["id=in.(1,2,3)"])
+      expect(insertFilters(mockChannel)).toEqual(["id=in.(1,2,3)"])
     })
 
     test("not(eq) maps to neq", async () => {
@@ -144,7 +154,110 @@ describe("realtime filter propagation", () => {
             .from({ user: collection })
             .where(({ user }) => not(eq(user.active, false)))
       )
-      expect(realtimeFilters(mockChannel)).toEqual(["active=neq.false"])
+      expect(insertFilters(mockChannel)).toEqual(["active=neq.false"])
+    })
+
+    test("isNull maps to is.null", async () => {
+      const { mockChannel } = await captureChannel(
+        (collection) => (q) =>
+          q.from({ user: collection }).where(({ user }) => isNull(user.name))
+      )
+      expect(insertFilters(mockChannel)).toEqual(["name=is.null"])
+    })
+
+    test("not(isNull) maps to not.is.null", async () => {
+      const { mockChannel } = await captureChannel(
+        (collection) => (q) =>
+          q
+            .from({ user: collection })
+            .where(({ user }) => not(isNull(user.name)))
+      )
+      expect(insertFilters(mockChannel)).toEqual(["name=not.is.null"])
+    })
+
+    test("not(inArray) maps to not.in", async () => {
+      const { mockChannel } = await captureChannel(
+        (collection) => (q) =>
+          q
+            .from({ user: collection })
+            .where(({ user }) => not(inArray(user.id, [1, 2])))
+      )
+      expect(insertFilters(mockChannel)).toEqual(["id=not.in.(1,2)"])
+    })
+
+    test("not(gt) maps to not.gt", async () => {
+      const { mockChannel } = await captureChannel(
+        (collection) => (q) =>
+          q.from({ user: collection }).where(({ user }) => not(gt(user.id, 5)))
+      )
+      expect(insertFilters(mockChannel)).toEqual(["id=not.gt.5"])
+    })
+
+    test("composite AND becomes a comma-separated filter", async () => {
+      const { mockChannel } = await captureChannel(
+        (collection) => (q) =>
+          q
+            .from({ user: collection })
+            .where(({ user }) => and(eq(user.active, true), gt(user.id, 5)))
+      )
+      expect(insertFilters(mockChannel)).toEqual(["active=eq.true,id=gt.5"])
+    })
+  })
+
+  describe("value serialization", () => {
+    test("a string containing a comma is PostgREST-quoted", async () => {
+      // Unquoted, the comma would read as a second ANDed condition.
+      const { mockChannel } = await captureChannel(
+        (collection) => (q) =>
+          q
+            .from({ user: collection })
+            .where(({ user }) => eq(user.name, "Doe, Jane"))
+      )
+      expect(insertFilters(mockChannel)).toEqual(['name=eq."Doe, Jane"'])
+    })
+
+    test("a quote inside a value is escaped", async () => {
+      const { mockChannel } = await captureChannel(
+        (collection) => (q) =>
+          q
+            .from({ user: collection })
+            .where(({ user }) => eq(user.name, 'He said "hi", ok'))
+      )
+      expect(insertFilters(mockChannel)).toEqual([
+        'name=eq."He said \\"hi\\", ok"',
+      ])
+    })
+
+    test("a plain string is left unquoted", async () => {
+      const { mockChannel } = await captureChannel(
+        (collection) => (q) =>
+          q.from({ user: collection }).where(({ user }) => eq(user.name, "Zed"))
+      )
+      expect(insertFilters(mockChannel)).toEqual(["name=eq.Zed"])
+    })
+
+    test("an in list of exactly 100 values is still filtered", async () => {
+      const values = Array.from({ length: 100 }, (_, index) => index)
+      const { mockChannel } = await captureChannel(
+        (collection) => (q) =>
+          q
+            .from({ user: collection })
+            .where(({ user }) => inArray(user.id, values))
+      )
+      expect(insertFilters(mockChannel)).toEqual([
+        `id=in.(${values.join(",")})`,
+      ])
+    })
+
+    test("an in list longer than 100 values falls back to a catch-all", async () => {
+      const values = Array.from({ length: 101 }, (_, index) => index)
+      const { mockChannel } = await captureChannel(
+        (collection) => (q) =>
+          q
+            .from({ user: collection })
+            .where(({ user }) => inArray(user.id, values))
+      )
+      expect(insertFilters(mockChannel)).toEqual([null])
     })
   })
 
@@ -153,25 +266,30 @@ describe("realtime filter propagation", () => {
       const { mockChannel } = await captureChannel(
         (collection) => (q) => q.from({ user: collection })
       )
-      expect(realtimeFilters(mockChannel)).toEqual([null])
+      expect(insertFilters(mockChannel)).toEqual([null])
     })
 
-    test("isNull has no Realtime operator", async () => {
+    test("no redundant unfiltered UPDATE listener is added", async () => {
       const { mockChannel } = await captureChannel(
-        (collection) => (q) =>
-          q.from({ user: collection }).where(({ user }) => isNull(user.name))
+        (collection) => (q) => q.from({ user: collection })
       )
-      expect(realtimeFilters(mockChannel)).toEqual([null])
+      expect(filtersFor(mockChannel, "UPDATE")).toEqual([null])
     })
+  })
 
-    test("composite AND cannot be a single Realtime filter", async () => {
+  describe("listener layout", () => {
+    test("filters apply to INSERT and UPDATE, never to DELETE", async () => {
       const { mockChannel } = await captureChannel(
         (collection) => (q) =>
-          q
-            .from({ user: collection })
-            .where(({ user }) => and(eq(user.active, true), gt(user.id, 5)))
+          q.from({ user: collection }).where(({ user }) => eq(user.id, 1))
       )
-      expect(realtimeFilters(mockChannel)).toEqual([null])
+
+      expect(filtersFor(mockChannel, "INSERT")).toEqual(["id=eq.1"])
+      // The filtered listener catches rows entering the window; the unfiltered
+      // one keeps rows already held up to date after they leave it.
+      expect(filtersFor(mockChannel, "UPDATE")).toEqual(["id=eq.1", null])
+      // Realtime only delivers filtered deletes with `replica identity full`.
+      expect(filtersFor(mockChannel, "DELETE")).toEqual([null])
     })
   })
 
@@ -187,52 +305,172 @@ describe("realtime filter propagation", () => {
       const { mockChannel, collection } = await captureChannel(
         (c) => (q) => q.from({ user: c })
       )
-      const { handler } = mockChannel.onCalls[0]
 
-      handler({ eventType: "INSERT", new: row, old: {} })
+      emit(mockChannel, { eventType: "INSERT", new: row, old: {} })
 
-      const key = collection.getKeyFromItem(row)
-      expect(collection.has(key)).toBe(true)
+      expect(collection.has(collection.getKeyFromItem(row))).toBe(true)
+    })
+
+    test("INSERT for a row already held overwrites instead of throwing", async () => {
+      const { mockChannel, collection } = await captureChannel(
+        (c) => (q) => q.from({ user: c })
+      )
+
+      emit(mockChannel, { eventType: "INSERT", new: row, old: {} })
+      expect(() =>
+        emit(mockChannel, {
+          eventType: "INSERT",
+          new: { ...row, name: "Twice" },
+          old: {},
+        })
+      ).not.toThrow()
+
+      expect(collection.get(collection.getKeyFromItem(row))?.name).toBe("Twice")
     })
 
     test("UPDATE writes the updated row", async () => {
       const { mockChannel, collection } = await captureChannel(
         (c) => (q) => q.from({ user: c })
       )
-      const { handler } = mockChannel.onCalls[0]
 
-      handler({ eventType: "INSERT", new: row, old: {} })
-      handler({
+      emit(mockChannel, { eventType: "INSERT", new: row, old: {} })
+      emit(mockChannel, {
         eventType: "UPDATE",
         new: { ...row, name: "Updated" },
         old: {},
       })
 
-      const key = collection.getKeyFromItem(row)
-      expect(collection.get(key)?.name).toBe("Updated")
+      expect(collection.get(collection.getKeyFromItem(row))?.name).toBe(
+        "Updated"
+      )
+    })
+
+    test("a matching UPDATE for an unseen row inserts it", async () => {
+      const { mockChannel, collection } = await captureChannel(
+        (c) => (q) => q.from({ user: c }).where(({ user }) => eq(user.id, 99))
+      )
+      const [filtered] = listenersFor(mockChannel, "UPDATE")
+
+      // Realtime only delivers this to the filtered listener when the row
+      // matches, which means the row has moved into the query's window.
+      expect(() =>
+        filtered.handler({ eventType: "UPDATE", new: row, old: {} })
+      ).not.toThrow()
+
+      expect(collection.has(collection.getKeyFromItem(row))).toBe(true)
+    })
+
+    test("an unfiltered UPDATE for an unseen row is ignored", async () => {
+      const { mockChannel, collection } = await captureChannel(
+        (c) => (q) => q.from({ user: c }).where(({ user }) => eq(user.id, 1))
+      )
+      const catchAll = listenersFor(mockChannel, "UPDATE").find(
+        (call) => !call.config.filter
+      )
+
+      // Would otherwise mirror every row in the table into the collection.
+      expect(() =>
+        catchAll?.handler({ eventType: "UPDATE", new: row, old: {} })
+      ).not.toThrow()
+
+      expect(collection.has(collection.getKeyFromItem(row))).toBe(false)
     })
 
     test("DELETE removes the row, and is a no-op for an unknown key", async () => {
       const { mockChannel, collection } = await captureChannel(
         (c) => (q) => q.from({ user: c })
       )
-      const { handler } = mockChannel.onCalls[0]
 
-      handler({ eventType: "INSERT", new: row, old: {} })
+      emit(mockChannel, { eventType: "INSERT", new: row, old: {} })
       const key = collection.getKeyFromItem(row)
       expect(collection.has(key)).toBe(true)
 
-      handler({ eventType: "DELETE", new: {}, old: row })
+      emit(mockChannel, { eventType: "DELETE", new: {}, old: row })
       expect(collection.has(key)).toBe(false)
 
       // A delete for a key the collection never had must not throw.
       expect(() =>
-        handler({
+        emit(mockChannel, {
           eventType: "DELETE",
           new: {},
           old: { id: 12_345, name: "", email: "", active: false },
         })
       ).not.toThrow()
+    })
+  })
+
+  describe("subscribing before fetching", () => {
+    test("the first fetch waits for the channel to be subscribed", async () => {
+      const mockFetch = createMockFetch()
+      const mockChannel = createMockChannel({ autoSubscribe: false })
+      const { collection } = createRealtimeUsersCollection(
+        mockFetch,
+        mockChannel
+      )
+      track(collection)
+
+      const live = startLiveQuery(
+        collection,
+        (c) => (q) => q.from({ user: c }).where(({ user }) => eq(user.id, 1))
+      )
+      const preloaded = live.preload()
+
+      await vi.waitFor(() => expect(mockChannel.on).toHaveBeenCalled())
+      // A row written now would be missed by the fetch, so it must not have
+      // started before the subscription is live.
+      expect(mockFetch).not.toHaveBeenCalled()
+
+      mockChannel.confirmSubscribed()
+      await preloaded
+      await live.toArrayWhenReady()
+
+      expect(mockFetch).toHaveBeenCalled()
+    })
+  })
+
+  describe("resubscribing when the filter set changes", () => {
+    test("uses a fresh channel topic and drops the previous channel", async () => {
+      const mockFetch = createMockFetch()
+      const channels: Array<MockChannel> = []
+      const { collection, supabase } = createRealtimeUsersCollection(
+        mockFetch,
+        () => {
+          const channel = createMockChannel()
+          channels.push(channel)
+          return channel
+        }
+      )
+      track(collection)
+
+      const first = startLiveQuery(
+        collection,
+        (c) => (q) => q.from({ user: c }).where(({ user }) => eq(user.id, 1))
+      )
+      await first.preload()
+      await first.toArrayWhenReady()
+      await vi.waitFor(() => expect(channels.length).toBe(1))
+
+      const second = startLiveQuery(
+        collection,
+        (c) => (q) => q.from({ user: c }).where(({ user }) => gt(user.id, 5))
+      )
+      await second.preload()
+      await second.toArrayWhenReady()
+      await vi.waitFor(() => expect(channels.length).toBe(2))
+
+      const topics = (
+        supabase.channel as unknown as ReturnType<typeof vi.fn>
+      ).mock.calls.map(([topic]) => topic)
+      // A repeated topic would hand back the channel being torn down.
+      expect(new Set(topics).size).toBe(topics.length)
+
+      // The union of both queries' filters is now subscribed.
+      expect(insertFilters(channels[1])).toEqual(["id=eq.1", "id=gt.5"])
+
+      // The old channel is only dropped once the replacement is subscribed.
+      await vi.waitFor(() =>
+        expect(supabase.removeChannel).toHaveBeenCalledWith(channels[0])
+      )
     })
   })
 

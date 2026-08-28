@@ -111,24 +111,67 @@ export type MockChannel = {
   onCalls: MockChannelOnCall[]
   on: ReturnType<typeof vi.fn>
   subscribe: ReturnType<typeof vi.fn>
+  /** Reports SUBSCRIBED when the channel was created with `autoSubscribe: false`. */
+  confirmSubscribed: () => void
 }
 
-export function createMockChannel(): MockChannel {
+export function createMockChannel({
+  autoSubscribe = true,
+}: {
+  autoSubscribe?: boolean
+} = {}): MockChannel {
   const onCalls: MockChannelOnCall[] = []
-  const channel = {
+  let pending: ((status: string) => void) | undefined
+
+  const channel: MockChannel = {
     onCalls,
     on: vi.fn((type: string, config: any, handler: (payload: any) => void) => {
       onCalls.push({ type, config, handler })
       return channel
     }),
-    subscribe: vi.fn(() => channel),
+    // The collection's first fetch waits for the subscription to settle, so the
+    // mock has to report a status like the real channel does.
+    subscribe: vi.fn((callback?: (status: string) => void) => {
+      if (autoSubscribe) {
+        callback?.("SUBSCRIBED")
+      } else {
+        pending = callback
+      }
+      return channel
+    }),
+    confirmSubscribed: () => {
+      pending?.("SUBSCRIBED")
+      pending = undefined
+    },
   }
   return channel
 }
 
+/** Returns the postgres_changes listeners registered for a given event. */
+export function listenersFor(mockChannel: MockChannel, event: string) {
+  return mockChannel.onCalls.filter((call) => call.config.event === event)
+}
+
+/** The filter strings of a given event's listeners (null when unfiltered). */
+export function filtersFor(
+  mockChannel: MockChannel,
+  event: string
+): Array<string | null> {
+  return listenersFor(mockChannel, event).map(
+    (call) => call.config.filter ?? null
+  )
+}
+
+/** Dispatches a payload to every listener registered for its event type. */
+export function emit(mockChannel: MockChannel, payload: any) {
+  for (const call of listenersFor(mockChannel, payload.eventType)) {
+    call.handler(payload)
+  }
+}
+
 export function createRealtimeUsersCollection(
   mockFetch: typeof fetch,
-  mockChannel: MockChannel
+  mockChannel: MockChannel | (() => MockChannel)
 ) {
   // A fresh QueryClient keeps the module-level realtime registry in db.ts
   // isolated per test.
@@ -137,8 +180,8 @@ export function createRealtimeUsersCollection(
     global: { fetch: mockFetch },
   })
   // The real client would open a live WebSocket, so stub the realtime surface.
-  supabase.channel = vi.fn(
-    () => mockChannel
+  supabase.channel = vi.fn(() =>
+    typeof mockChannel === "function" ? mockChannel() : mockChannel
   ) as unknown as typeof supabase.channel
   supabase.removeChannel = vi.fn() as unknown as typeof supabase.removeChannel
 

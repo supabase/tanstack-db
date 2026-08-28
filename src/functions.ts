@@ -13,29 +13,80 @@ import {
 } from "@tanstack/db"
 import type { QueryClient, QueryMeta } from "@tanstack/query-core"
 
+/** `not(...)` comparisons reach us as the operator with this prefix. */
+const NEGATION_PREFIX = "not_"
+
+/** Comparison operators that map onto a PostgREST filter of the same name. */
+const COMPARISON_OPERATORS = new Set(["eq", "gt", "gte", "lt", "lte"])
+
+/**
+ * postgrest-js interpolates filter values into the URL as-is, and
+ * `Date.prototype.toString()` produces something Postgres cannot cast to a
+ * timestamp. Rendering it the same way the Realtime filters do keeps the
+ * server query and the subscription in agreement.
+ */
+const toFilterValue = (value: unknown) =>
+  value instanceof Date ? value.toISOString() : value
+
+const applyComparison = (
+  baseQuery: PostgrestFilterBuilder<any, any, any, any>,
+  column: string,
+  operator: string,
+  value: unknown
+) => {
+  if (operator === "gt") {
+    return baseQuery.gt(column, value)
+  }
+  if (operator === "gte") {
+    return baseQuery.gte(column, value)
+  }
+  if (operator === "lt") {
+    return baseQuery.lt(column, value)
+  }
+  if (operator === "lte") {
+    return baseQuery.lte(column, value)
+  }
+  return baseQuery.eq(column, value)
+}
+
 const buildQuery = (
   baseQuery: PostgrestFilterBuilder<any, any, any, any>,
   filter: SimpleComparison
 ) => {
-  if (filter.operator === "eq") {
-    baseQuery = baseQuery.eq(filter.field?.join("."), filter.value)
-  } else if (filter.operator === "gt") {
-    baseQuery = baseQuery.gt(filter.field?.join("."), filter.value)
-  } else if (filter.operator === "gte") {
-    baseQuery = baseQuery.gte(filter.field?.join("."), filter.value)
-  } else if (filter.operator === "lt") {
-    baseQuery = baseQuery.lt(filter.field?.join("."), filter.value)
-  } else if (filter.operator === "lte") {
-    baseQuery = baseQuery.lte(filter.field?.join("."), filter.value)
-  } else if (filter.operator === "in") {
-    baseQuery = baseQuery.in(filter.field?.join("."), filter.value)
-  } else if (filter.operator === "isNull") {
-    baseQuery = baseQuery.is(filter.field?.join("."), null)
-  } else if (filter.operator === "not_eq") {
-    baseQuery = baseQuery.not(filter.field?.join("."), "eq", filter.value)
-  } else {
-    console.warn(`buildQuery: unsupported operator: ${filter.operator}`)
+  const column = filter.field?.join(".")
+  if (!column) {
+    return baseQuery
   }
+
+  const negated = filter.operator.startsWith(NEGATION_PREFIX)
+  const operator = negated
+    ? filter.operator.slice(NEGATION_PREFIX.length)
+    : filter.operator
+
+  if (operator === "isNull") {
+    return negated
+      ? baseQuery.not(column, "is", null)
+      : baseQuery.is(column, null)
+  }
+
+  if (operator === "in") {
+    const values = Array.isArray(filter.value)
+      ? filter.value.map(toFilterValue)
+      : filter.value
+    return negated
+      ? baseQuery.notIn(column, values)
+      : baseQuery.in(column, values)
+  }
+
+  if (!COMPARISON_OPERATORS.has(operator)) {
+    console.warn(`buildQuery: unsupported operator: ${filter.operator}`)
+    return baseQuery
+  }
+
+  const value = toFilterValue(filter.value)
+  return negated
+    ? baseQuery.not(column, operator, value)
+    : applyComparison(baseQuery, column, operator, value)
 }
 
 export const subsetOptionsToQueryKey = (
@@ -70,9 +121,10 @@ export const subsetOptionsToQueryKey = (
       lte: (field, value) => {
         return `${field.join(".")}=lte.${value}`
       },
-      not: (field, operator, value) => {
-        return field
-      },
+      // The single argument is the already-parsed inner condition. Wrapping it
+      // is what keeps `not(gt(id, 5))` from sharing a cache entry with
+      // `gt(id, 5)`.
+      not: (inner) => (inner === null ? null : `not(${inner})`),
     },
     onUnknownOperator: (operator, args) => {
       console.warn(`Unsupported operator: ${operator}`)
@@ -145,9 +197,9 @@ export const supabaseQueryFn = async (
   }
 
   if (parsed.filters) {
-    ;[...parsed.filters, ...cursorFilters].forEach((filter) => {
-      buildQuery(baseQuery, filter)
-    })
+    for (const filter of [...parsed.filters, ...cursorFilters]) {
+      baseQuery = buildQuery(baseQuery, filter)
+    }
   }
 
   const { data, error } = await baseQuery
