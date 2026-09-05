@@ -121,6 +121,30 @@ describe("PostgREST query generation", () => {
       expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=in.(1,2,3)"])
     })
 
+    test("merges IN filters for the same column", async () => {
+      await queryResult((q) =>
+        q
+          .from({ user: usersCollection })
+          .where(({ user }) =>
+            and(inArray(user.id, [1, 2]), inArray(user.id, [2, 3]))
+          )
+      )
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=in.(1,2,3)"])
+    })
+
+    test("keeps IN filters for different columns separate", async () => {
+      await queryResult((q) =>
+        q
+          .from({ user: usersCollection })
+          .where(({ user }) =>
+            and(inArray(user.id, [1, 2]), inArray(user.name, ["Alice", "Bob"]))
+          )
+      )
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&id=in.(1,2)&name=in.(Alice,Bob)",
+      ])
+    })
+
     test("WHERE NOT(active = false)", async () => {
       await queryResult((q) =>
         q

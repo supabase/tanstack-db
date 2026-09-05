@@ -13,6 +13,37 @@ import {
 } from "@tanstack/db"
 import type { QueryClient, QueryMeta } from "@tanstack/query-core"
 
+const mergeInFilters = (filters: SimpleComparison[]) => {
+  const mergedFilters: SimpleComparison[] = []
+  const filtersByField = new Map<string, SimpleComparison>()
+
+  for (const filter of filters) {
+    const field = filter.field?.join(".")
+    if (filter.operator !== "in" || !field) {
+      mergedFilters.push(filter)
+      continue
+    }
+
+    const values = Array.isArray(filter.value) ? filter.value : [filter.value]
+    const existingFilter = filtersByField.get(field)
+    if (existingFilter) {
+      existingFilter.value = Array.from(
+        new Set([...(existingFilter.value as unknown[]), ...values])
+      )
+      continue
+    }
+
+    const mergedFilter = {
+      ...filter,
+      value: Array.from(new Set(values)),
+    }
+    mergedFilters.push(mergedFilter)
+    filtersByField.set(field, mergedFilter)
+  }
+
+  return mergedFilters
+}
+
 const buildQuery = (
   baseQuery: PostgrestFilterBuilder<any, any, any, any>,
   filter: SimpleComparison
@@ -145,7 +176,7 @@ export const supabaseQueryFn = async (
   }
 
   if (parsed.filters) {
-    ;[...parsed.filters, ...cursorFilters].forEach((filter) => {
+    mergeInFilters([...parsed.filters, ...cursorFilters]).forEach((filter) => {
       buildQuery(baseQuery, filter)
     })
   }
