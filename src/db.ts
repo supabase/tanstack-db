@@ -184,10 +184,13 @@ export const attachSupabaseListeners = <
       "postgres_changes",
       { event: "*", schema: "public", table: tableName },
       (payload) => {
+        // Realtime events can replay or race the initial PostgREST fetch, so
+        // an "INSERT" may already be present and an "UPDATE" may not be yet.
+        // Upsert handles both directions without throwing.
         if (payload.eventType === "INSERT") {
-          collection.utils.writeInsert(payload.new)
+          collection.utils.writeUpsert(payload.new)
         } else if (payload.eventType === "UPDATE") {
-          collection.utils.writeUpdate(payload.new)
+          collection.utils.writeUpsert(payload.new)
         } else if (payload.eventType === "DELETE") {
           const id = collection.getKeyFromItem(payload.old as T)
           if (collection.has(id)) {

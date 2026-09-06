@@ -46,9 +46,24 @@ export const mockResponses: Record<string, any[]> = {
 }
 
 export function createMockFetch() {
-  return vi.fn<typeof fetch>().mockImplementation((input) => {
+  return vi.fn<typeof fetch>().mockImplementation((input, init) => {
     const url = new URL(typeof input === "string" ? input : input.toString())
     const table = url.pathname.replace("/rest/v1/", "")
+    const method = init?.method ?? "GET"
+
+    // For insert/update requests, echo the request body back as the
+    // "representation" so `.select().single()` has something schema-shaped
+    // to parse, mirroring what PostgREST would return.
+    if (method === "POST" || method === "PATCH") {
+      const body = init?.body ? JSON.parse(init.body as string) : {}
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      )
+    }
+
     const response = mockResponses[table] ?? []
     return Promise.resolve(
       new Response(JSON.stringify(response), {
@@ -57,6 +72,15 @@ export function createMockFetch() {
       })
     )
   })
+}
+
+/** Extract the headers of a captured `fetch` call as a `Headers` instance. */
+export function getRequestHeaders(
+  mockFetch: ReturnType<typeof createMockFetch>,
+  callIndex = 0
+): Headers {
+  const init = mockFetch.mock.calls[callIndex]?.[1]
+  return new Headers(init?.headers as ConstructorParameters<typeof Headers>[0])
 }
 
 export function createMockedUsersCollection(mockFetch: typeof fetch) {
