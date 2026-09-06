@@ -1,11 +1,17 @@
+import { createClient } from "@supabase/supabase-js"
+import { createCollection } from "@tanstack/db"
 import { afterEach, describe, expect, test } from "vitest"
 import pkg from "../package.json"
+import { supabaseCollectionOptions } from "../src/index"
 import { VERSION } from "../src/version"
 import {
   createMockedUsersCollection,
   createMockFetch,
   getRequestHeaders,
   queryResult,
+  SUPABASE_KEY,
+  SUPABASE_URL,
+  usersSchema,
 } from "./test.utils"
 
 const EXPECTED_CLIENT_INFO = `@supabase-labs/tanstack-db/${VERSION}`
@@ -95,5 +101,39 @@ describe("automatic X-Client-Info header", () => {
     expect(getRequestHeaders(mockFetch, lastCall).get("x-client-info")).toBe(
       EXPECTED_CLIENT_INFO
     )
+  })
+
+  test("replaces supabase-js's own X-Client-Info rather than appending", async () => {
+    const mockFetch = createMockFetch()
+    collection = createMockedUsersCollection(mockFetch)
+
+    await queryResult((q) => q.from({ user: collection }))
+
+    const value = getRequestHeaders(mockFetch, 0).get("x-client-info")
+    expect(value).toBe(EXPECTED_CLIENT_INFO)
+    expect(value).not.toContain("supabase-js")
+  })
+
+  test("preserves user-supplied global headers", async () => {
+    const mockFetch = createMockFetch()
+    collection = createCollection(
+      supabaseCollectionOptions({
+        tableName: "users",
+        keys: ["id"],
+        schema: usersSchema,
+        supabase: createClient(SUPABASE_URL, SUPABASE_KEY, {
+          global: {
+            fetch: mockFetch,
+            headers: { "X-Custom-Header": "custom-value" },
+          },
+        }),
+      })
+    )
+
+    await queryResult((q) => q.from({ user: collection }))
+
+    const headers = getRequestHeaders(mockFetch, 0)
+    expect(headers.get("x-custom-header")).toBe("custom-value")
+    expect(headers.get("x-client-info")).toBe(EXPECTED_CLIENT_INFO)
   })
 })

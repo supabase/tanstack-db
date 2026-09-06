@@ -73,6 +73,19 @@ describe("queryOnce PostgREST query generation", () => {
         `@supabase-labs/tanstack-db/${VERSION}`
       )
     })
+
+    test("is present on the aggregate/groupBy PostgREST push-down path", async () => {
+      await queryOnce(
+        (q) =>
+          q
+            .from({ user: usersCollection })
+            .select(({ user }) => ({ totalUsers: count(user.id) })),
+        supabase
+      )
+      expect(getRequestHeaders(mockFetch, 0).get("x-client-info")).toBe(
+        `@supabase-labs/tanstack-db/${VERSION}`
+      )
+    })
   })
 
   describe("WHERE", () => {
