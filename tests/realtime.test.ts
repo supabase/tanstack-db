@@ -509,6 +509,143 @@ describe("realtime filter propagation", () => {
     })
   })
 
+  describe("racing local mutations", () => {
+    const row = { id: 77, name: "Race", email: "race@test.com", active: true }
+
+    test("a Realtime echo of a pending local insert does not throw", async () => {
+      const { mockChannel, collection } = await captureChannel(
+        (c) => (q) => q.from({ user: c })
+      )
+      const key = collection.getKeyFromItem(row)
+
+      const tx = collection.insert(row)
+      // The optimistic row is visible right away, but the synced store only
+      // learns about it once PostgREST answers — Realtime is usually faster.
+      expect(collection.has(key)).toBe(true)
+      expect(() =>
+        emit(mockChannel, { eventType: "INSERT", new: row, old: {} })
+      ).not.toThrow()
+
+      await expect(tx.isPersisted.promise).resolves.toBeDefined()
+      expect(collection.get(key)?.name).toBe("Race")
+    })
+
+    test("a Realtime echo of a pending local delete does not throw", async () => {
+      const { mockChannel, collection } = await captureChannel(
+        (c) => (q) => q.from({ user: c })
+      )
+      emit(mockChannel, { eventType: "INSERT", new: row, old: {} })
+      const key = collection.getKeyFromItem(row)
+
+      const tx = collection.delete(key)
+      expect(collection.has(key)).toBe(false)
+      expect(() =>
+        emit(mockChannel, { eventType: "DELETE", new: {}, old: row })
+      ).not.toThrow()
+
+      await expect(tx.isPersisted.promise).resolves.toBeDefined()
+      expect(collection.has(key)).toBe(false)
+    })
+  })
+
+  describe("swapping channels safely", () => {
+    // The first channel joins immediately; every replacement waits for the test
+    // to report its subscription status.
+    async function startSwap() {
+      const mockFetch = createMockFetch()
+      const channels: Array<MockChannel> = []
+      const { collection, supabase } = createRealtimeUsersCollection(
+        mockFetch,
+        () => {
+          const channel = createMockChannel({
+            autoSubscribe: channels.length === 0,
+          })
+          channels.push(channel)
+          return channel
+        }
+      )
+      track(collection)
+
+      const first = startLiveQuery(
+        collection,
+        (c) => (q) => q.from({ user: c }).where(({ user }) => eq(user.id, 1))
+      )
+      await first.preload()
+      await first.toArrayWhenReady()
+      await vi.waitFor(() => expect(channels.length).toBe(1))
+
+      const second = startLiveQuery(
+        collection,
+        (c) => (q) => q.from({ user: c }).where(({ user }) => gt(user.id, 5))
+      )
+      const secondPreloaded = second.preload()
+      await vi.waitFor(() => expect(channels.length).toBe(2))
+      await vi.waitFor(() => expect(channels[1].subscribe).toHaveBeenCalled())
+
+      return { channels, collection, supabase, secondPreloaded }
+    }
+
+    test("keeps the previous channel until the replacement reports SUBSCRIBED", async () => {
+      const { channels, supabase, secondPreloaded } = await startSwap()
+
+      // Dropping it now would leave a window with no subscription at all.
+      expect(supabase.removeChannel).not.toHaveBeenCalled()
+
+      channels[1].confirmSubscribed()
+      await secondPreloaded
+      await vi.waitFor(() =>
+        expect(supabase.removeChannel).toHaveBeenCalledWith(channels[0])
+      )
+    })
+
+    test("falls back to a catch-all when the server rejects the filtered subscription", async () => {
+      const { channels, collection, supabase, secondPreloaded } =
+        await startSwap()
+
+      channels[1].confirmSubscribed("CHANNEL_ERROR")
+
+      await vi.waitFor(() => expect(channels.length).toBe(3))
+      expect(insertFilters(channels[2])).toEqual([null])
+      expect(supabase.removeChannel).toHaveBeenCalledWith(channels[1])
+      // The working channel is only replaced once the fallback has joined.
+      expect(supabase.removeChannel).not.toHaveBeenCalledWith(channels[0])
+
+      channels[2].confirmSubscribed()
+      await vi.waitFor(() =>
+        expect(supabase.removeChannel).toHaveBeenCalledWith(channels[0])
+      )
+      await secondPreloaded
+
+      // The rejected filter set is remembered: a query that would produce it
+      // again reuses the catch-all instead of failing the same way twice.
+      const third = startLiveQuery(
+        collection,
+        (c) => (q) => q.from({ user: c }).where(({ user }) => gt(user.id, 5))
+      )
+      await third.preload()
+      await third.toArrayWhenReady()
+      expect(channels.length).toBe(3)
+    })
+
+    test("keeps the previous channel when even the catch-all is rejected", async () => {
+      const { channels, supabase, secondPreloaded } = await startSwap()
+
+      channels[1].confirmSubscribed("CHANNEL_ERROR")
+      await vi.waitFor(() => expect(channels.length).toBe(3))
+      channels[2].confirmSubscribed("CHANNEL_ERROR")
+
+      await vi.waitFor(() =>
+        expect(supabase.removeChannel).toHaveBeenCalledWith(channels[2])
+      )
+      expect(supabase.removeChannel).toHaveBeenCalledWith(channels[1])
+      expect(supabase.removeChannel).not.toHaveBeenCalledWith(channels[0])
+      expect(channels.length).toBe(3)
+
+      // Data loading is never held hostage by a failed subscription.
+      await secondPreloaded
+    })
+  })
+
   // `or(...)` (and other unsupported expressions) cannot be driven through the
   // live-query path because the query's own supabaseQueryFn calls the same
   // throwing extractSimpleComparisons. Cover the defensive fallback directly.

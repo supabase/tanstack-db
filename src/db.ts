@@ -40,8 +40,17 @@ interface TableEntry {
   realtimeFiltersKey: string | null
   /** Resolves once the current channel finished subscribing (or gave up) */
   realtimeSubscribed: Promise<void> | null
+  /**
+   * Filter sets the server has rejected. They are replaced by a catch-all
+   * subscription instead of being retried on every observer change.
+   */
+  rejectedFilterKeys: Set<string>
   supabase: SupabaseClient
 }
+
+/** A subscription that receives every change for the table. */
+const CATCH_ALL_FILTERS: Array<string | null> = [null]
+const CATCH_ALL_FILTERS_KEY = JSON.stringify(CATCH_ALL_FILTERS)
 
 /**
  * Channel topics are namespaced and numbered because `supabase.channel()`
@@ -52,9 +61,90 @@ interface TableEntry {
  * same Supabase client — so the counter is module-level, not per table.
  */
 let channelCount = 0
+
+/**
+ * Every channel this adapter opens for `tableName` has a topic starting with
+ * this prefix (supabase-js exposes it under its own `realtime:` prefix).
+ */
+export const realtimeChannelTopicPrefix = (tableName: string) =>
+  `supabase-tanstack-db:${tableName}:`
+
 const nextChannelTopic = (tableName: string) => {
   channelCount += 1
-  return `supabase-tanstack-db:${tableName}:${channelCount}`
+  return `${realtimeChannelTopicPrefix(tableName)}${channelCount}`
+}
+
+/**
+ * Opens a channel for `filters` and makes it the table's current channel. The
+ * previous channel keeps listening until the replacement is actually joined,
+ * so no change slips through while the swap is in flight. If the server
+ * rejects the new subscription, the previous channel stays in place and a
+ * catch-all subscription is attempted instead of losing Realtime entirely.
+ */
+const subscribeToChanges = (
+  entry: TableEntry,
+  tableName: string,
+  collection: Collection<any, any>,
+  filters: Array<string | null>,
+  filtersKey: string
+) => {
+  const previousChannel = entry.realtimeChannel
+  const previousFiltersKey = entry.realtimeFiltersKey
+
+  const subscription = attachSupabaseListeners(
+    entry.supabase,
+    nextChannelTopic(tableName),
+    tableName,
+    collection,
+    filters
+  )
+  if (!subscription) {
+    if (previousChannel) {
+      entry.supabase.removeChannel(previousChannel)
+    }
+    entry.realtimeChannel = null
+    entry.realtimeFiltersKey = null
+    entry.realtimeSubscribed = null
+    return
+  }
+
+  entry.realtimeChannel = subscription.channel
+  entry.realtimeFiltersKey = filtersKey
+  entry.realtimeSubscribed = subscription.ready
+
+  const onJoined = () => {
+    if (previousChannel) {
+      entry.supabase.removeChannel(previousChannel)
+    }
+  }
+
+  const onRejected = () => {
+    entry.supabase.removeChannel(subscription.channel)
+    if (entry.realtimeChannel !== subscription.channel) {
+      // A newer subscription has already taken over the swap.
+      return
+    }
+    // Hand the swap back to the still-open previous channel, so whatever is
+    // tried next treats it as its predecessor.
+    entry.realtimeChannel = previousChannel
+    entry.realtimeFiltersKey = previousFiltersKey
+    entry.realtimeSubscribed = null
+    if (filtersKey === CATCH_ALL_FILTERS_KEY) {
+      // Even the unfiltered subscription was refused: Realtime is unusable for
+      // this table right now. The next observer change will try again.
+      return
+    }
+    entry.rejectedFilterKeys.add(filtersKey)
+    subscribeToChanges(
+      entry,
+      tableName,
+      collection,
+      CATCH_ALL_FILTERS,
+      CATCH_ALL_FILTERS_KEY
+    )
+  }
+
+  subscription.joined.then((joined) => (joined ? onJoined() : onRejected()))
 }
 
 // Per-QueryClient registry of table entries, with a single cache subscription per client
@@ -98,8 +188,12 @@ const ensureQueryCacheSubscription = (queryClient: QueryClient) => {
       const whereExpressions = queries.map(
         (query) => query.meta?.loadSubsetOptions?.where
       )
-      const filters = buildRealtimeFilters(whereExpressions)
-      const filtersKey = JSON.stringify(filters)
+      let filters = buildRealtimeFilters(whereExpressions)
+      let filtersKey = JSON.stringify(filters)
+      if (entry.rejectedFilterKeys.has(filtersKey)) {
+        filters = CATCH_ALL_FILTERS
+        filtersKey = CATCH_ALL_FILTERS_KEY
+      }
 
       // Reuse the existing channel when the set of filters hasn't changed.
       if (entry.realtimeChannel && entry.realtimeFiltersKey === filtersKey) {
@@ -107,30 +201,13 @@ const ensureQueryCacheSubscription = (queryClient: QueryClient) => {
       }
 
       // Filters changed (or no channel yet): subscribe with the new filters.
-      const previousChannel = entry.realtimeChannel
-      const subscription = attachSupabaseListeners(
-        entry.supabase,
-        nextChannelTopic(tableName),
+      subscribeToChanges(
+        entry,
         tableName,
         entry.collectionRef,
-        filters
+        filters,
+        filtersKey
       )
-      entry.realtimeChannel = subscription?.channel ?? null
-      entry.realtimeFiltersKey = subscription ? filtersKey : null
-      entry.realtimeSubscribed = subscription?.subscribed ?? null
-
-      // Keep the previous channel listening until its replacement is
-      // subscribed, so no change slips through while the swap is in flight.
-      if (previousChannel) {
-        const removePrevious = () => {
-          entry.supabase.removeChannel(previousChannel)
-        }
-        if (subscription) {
-          subscription.subscribed.then(removePrevious, removePrevious)
-        } else {
-          removePrevious()
-        }
-      }
     }
   })
 }
@@ -151,6 +228,7 @@ const registerTable = (
       realtimeChannel: null,
       realtimeFiltersKey: null,
       realtimeSubscribed: null,
+      rejectedFilterKeys: new Set(),
     })
   }
 

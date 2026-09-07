@@ -135,8 +135,11 @@ export type MockChannel = {
   onCalls: MockChannelOnCall[]
   on: ReturnType<typeof vi.fn>
   subscribe: ReturnType<typeof vi.fn>
-  /** Reports SUBSCRIBED when the channel was created with `autoSubscribe: false`. */
-  confirmSubscribed: () => void
+  /**
+   * Reports a subscription status (SUBSCRIBED by default) when the channel was
+   * created with `autoSubscribe: false`.
+   */
+  confirmSubscribed: (status?: string) => void
 }
 
 export function createMockChannel({
@@ -163,8 +166,8 @@ export function createMockChannel({
       }
       return channel
     }),
-    confirmSubscribed: () => {
-      pending?.("SUBSCRIBED")
+    confirmSubscribed: (status = "SUBSCRIBED") => {
+      pending?.(status)
       pending = undefined
     },
   }

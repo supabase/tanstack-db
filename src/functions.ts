@@ -61,8 +61,10 @@ export const supabaseOnInsert = async (
       })
 
       mutation.modified = data
-      // The data has been inserted and confirmed by the server, so we can write it to the collection
-      collection.utils.writeInsert(data)
+      // The data has been inserted and confirmed by the server, so we can write
+      // it to the collection. Realtime may already have echoed the insert, in
+      // which case this is an update of the synced row rather than an insert.
+      collection.utils.writeUpsert(data)
     })
   )
 
@@ -109,8 +111,13 @@ export const supabaseOnDelete = async (
         search: keyColumnsToSearch(keys, mutation.original),
       })
 
-      // The data has been deleted and confirmed by the server, so we can write it to the collection
-      collection.utils.writeDelete(collection.getKeyFromItem(mutation.original))
+      // The data has been deleted and confirmed by the server, so we can write
+      // it to the collection — unless Realtime already echoed the delete, in
+      // which case the synced row is gone and writing again would throw.
+      const key = collection.getKeyFromItem(mutation.original)
+      if (collection._state.syncedData.has(key)) {
+        collection.utils.writeDelete(key)
+      }
     })
   )
 

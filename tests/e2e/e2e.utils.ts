@@ -3,6 +3,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { createCollection, createLiveQueryCollection } from "@tanstack/db"
 import { QueryClient } from "@tanstack/query-core"
 import { test as baseTest, expect, inject, vi } from "vitest"
+import { realtimeChannelTopicPrefix } from "../../src/db"
 import { supabaseCollectionOptions } from "../../src/index"
 import { usersSchema } from "../test.utils"
 
@@ -48,16 +49,17 @@ const liveUsers = (base: UsersCollection) =>
 
 type LiveUsersCollection = ReturnType<typeof liveUsers>
 
-// Waits until the adapter's realtime channel for the table is actually joined,
-// so changes written afterwards are guaranteed to be captured. Coupled to the
-// adapter naming its channel after the table (supabase.channel(tableName) in
-// src/db.ts), which supabase-js exposes under the "realtime:" topic prefix.
+// Waits until one of the adapter's realtime channels for the table is actually
+// joined, so changes written afterwards are guaranteed to be captured. The
+// adapter numbers its channel topics (see realtimeChannelTopicPrefix in
+// src/db.ts), and supabase-js exposes them under its own "realtime:" prefix.
 const waitForChannel = (supabase: SupabaseClient, table: string) =>
   vi.waitFor(() => {
-    const channel = supabase
+    const prefix = `realtime:${realtimeChannelTopicPrefix(table)}`
+    const joined = supabase
       .getChannels()
-      .find((c) => c.topic === `realtime:${table}`)
-    expect(channel?.state).toBe("joined")
+      .some((c) => c.topic.startsWith(prefix) && c.state === "joined")
+    expect(joined).toBe(true)
   }, WAIT)
 
 const preloadSeeded = async (live: LiveUsersCollection) => {

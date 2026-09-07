@@ -1,7 +1,8 @@
-import type {
-  RealtimePostgresChangesFilter,
-  RealtimePostgresChangesPayload,
-  SupabaseClient,
+import {
+  REALTIME_SUBSCRIBE_STATES,
+  type RealtimePostgresChangesFilter,
+  type RealtimePostgresChangesPayload,
+  type SupabaseClient,
 } from "@supabase/supabase-js"
 import {
   type Collection,
@@ -17,12 +18,19 @@ type ChangeEvent = "INSERT" | "UPDATE" | "DELETE"
 export type RealtimeSubscription = {
   channel: ReturnType<SupabaseClient["channel"]>
   /**
-   * Resolves once the channel reached a terminal subscription state, or after
+   * Resolves once the channel reported any subscription status, or after
    * {@link SUBSCRIBE_TIMEOUT_MS} if the server never answers. Never rejects, so
    * callers can safely gate work on it without an unreachable Realtime server
    * blocking them forever.
    */
-  subscribed: Promise<void>
+  ready: Promise<void>
+  /**
+   * Resolves `true` once the channel is joined and `false` once the server
+   * rejected the subscription (or the channel closed before joining). Unlike
+   * {@link ready} it is not time-bounded: while realtime-js is still retrying
+   * the join it stays pending.
+   */
+  joined: Promise<boolean>
 }
 
 /**
@@ -239,19 +247,21 @@ export const attachSupabaseListeners = <
     return config
   }
 
+  // `collection.has()` reflects the optimistic view, which includes local
+  // mutations that are still in flight. The manual sync writes below validate
+  // against the synced store only, so that is the store to check: a Realtime
+  // echo of a pending local insert must not be treated as an update, and a
+  // row with a pending local delete is still there to be updated or deleted.
+  const isSynced = (id: TKey) => collection._state.syncedData.has(id)
+
   // The row matches an active query's filter, so it belongs in the collection
-  // whether or not we have seen it before.
+  // whether or not we have seen it before. Upsert decides insert-vs-update on
+  // the synced store, which also makes replayed or racing events harmless.
   const handleUpsert = (payload: RealtimePostgresChangesPayload<T>) => {
     if (payload.eventType !== "INSERT" && payload.eventType !== "UPDATE") {
       return
     }
-    const row = payload.new as T
-    const id = collection.getKeyFromItem(row)
-    if (collection.has(id)) {
-      collection.utils.writeUpdate(row)
-    } else {
-      collection.utils.writeInsert(row)
-    }
+    collection.utils.writeUpsert(payload.new as T)
   }
 
   // Unfiltered updates arrive for every row in the table, so only rows the
@@ -262,8 +272,7 @@ export const attachSupabaseListeners = <
       return
     }
     const row = payload.new as T
-    const id = collection.getKeyFromItem(row)
-    if (collection.has(id)) {
+    if (isSynced(collection.getKeyFromItem(row))) {
       collection.utils.writeUpdate(row)
     }
   }
@@ -273,7 +282,7 @@ export const attachSupabaseListeners = <
       return
     }
     const id = collection.getKeyFromItem(payload.old as T)
-    if (collection.has(id)) {
+    if (isSynced(id)) {
       collection.utils.writeDelete(id)
     }
   }
@@ -297,20 +306,30 @@ export const attachSupabaseListeners = <
     handleDelete(p as RealtimePostgresChangesPayload<T>)
   )
 
-  const subscribed = new Promise<void>((resolve) => {
-    const timeout = setTimeout(resolve, SUBSCRIBE_TIMEOUT_MS)
-    const settle = () => {
-      clearTimeout(timeout)
-      resolve()
-    }
-    try {
-      channel.subscribe(settle)
-    } catch {
-      // subscribe() throws synchronously on an already-joined channel. Data
-      // loading must not be held up by a channel that will never connect.
-      settle()
-    }
+  let resolveJoined: (joined: boolean) => void = () => undefined
+  const joined = new Promise<boolean>((resolve) => {
+    resolveJoined = resolve
   })
 
-  return { channel, subscribed }
+  const ready = new Promise<void>((resolve) => {
+    const timeout = setTimeout(resolve, SUBSCRIBE_TIMEOUT_MS)
+    channel.subscribe((status) => {
+      clearTimeout(timeout)
+      resolve()
+      if (status === REALTIME_SUBSCRIBE_STATES.SUBSCRIBED) {
+        resolveJoined(true)
+      } else if (
+        status === REALTIME_SUBSCRIBE_STATES.CHANNEL_ERROR ||
+        status === REALTIME_SUBSCRIBE_STATES.CLOSED
+      ) {
+        // CHANNEL_ERROR is how the server rejects a subscription — typically a
+        // filter it cannot evaluate — and it errors the whole channel.
+        // TIMED_OUT is deliberately not terminal: realtime-js keeps retrying
+        // the join and reports the outcome through this same callback.
+        resolveJoined(false)
+      }
+    })
+  })
+
+  return { channel, ready, joined }
 }
