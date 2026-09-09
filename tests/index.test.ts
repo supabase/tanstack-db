@@ -484,6 +484,9 @@ describe("PostgREST query generation", () => {
   })
 
   describe("LIMIT + OFFSET", () => {
+    // TanStack DB collapses `.limit(n).offset(m)` into a single `limit=n+m`
+    // subset request, so offset is not surfaced separately on this path. The
+    // offset branch in supabaseQueryFn is covered directly in functions.test.ts.
     test.todo("pagination (page 2)", async () => {
       await queryResult((q) =>
         q
