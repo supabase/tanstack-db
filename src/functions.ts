@@ -14,6 +14,8 @@ import {
 import { postgrestRequest } from "./postgrest-request"
 import { isSynced } from "./realtime"
 
+export const DEFAULT_PAGE_SIZE = 1000
+
 export const subsetOptionsToQueryKey = (
   tableName: string,
   ctx: LoadSubsetOptions
@@ -36,14 +38,53 @@ export const supabaseQueryFn = async (
     meta: QueryMeta | undefined
     pageParam?: unknown
     direction?: unknown
-  }
+  },
+  pageSize = DEFAULT_PAGE_SIZE
 ) => {
-  const search = loadSubsetOptionsToSearch(ctx.meta?.loadSubsetOptions ?? {})
-  const data = await postgrestRequest(supabase, tableName, {
-    method: "GET",
-    search,
-  })
-  return data || []
+  if (!Number.isSafeInteger(pageSize) || pageSize <= 0) {
+    throw new Error("pageSize must be a positive integer")
+  }
+
+  const options = ctx.meta?.loadSubsetOptions ?? {}
+  const { limit, offset } = options
+  if (limit === 0) {
+    return []
+  }
+
+  const rows: any[] = []
+  let pageOffset = offset ?? 0
+
+  while (limit === undefined || rows.length < limit) {
+    const remaining = limit === undefined ? pageSize : limit - rows.length
+    const currentPageSize = Math.min(pageSize, remaining)
+    const search = loadSubsetOptionsToSearch(options)
+
+    // Keep the first default-sized request unchanged for compatibility with
+    // existing clients. Supabase's default API row cap is 1,000, so a full
+    // response signals that another range should be fetched.
+    const isDefaultInitialPage =
+      pageOffset === 0 && limit === undefined && pageSize === DEFAULT_PAGE_SIZE
+    if (!isDefaultInitialPage) {
+      search.set("limit", String(currentPageSize))
+      if (pageOffset !== 0) {
+        search.set("offset", String(pageOffset))
+      }
+    }
+
+    const data = await postgrestRequest(supabase, tableName, {
+      method: "GET",
+      search,
+    })
+    const page = data || []
+    rows.push(...page)
+
+    if (page.length < currentPageSize) {
+      break
+    }
+    pageOffset += currentPageSize
+  }
+
+  return rows
 }
 
 export const supabaseOnInsert = async (

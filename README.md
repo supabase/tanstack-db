@@ -131,11 +131,37 @@ const todos = createCollection(
 | `schema`      | `StandardSchemaV1` | Yes      | Schema for a single row. Supports any [Standard Schema](https://standardschema.dev)-compatible library, including Zod and Valibot. |
 | `keys`        | `string[]`         | Yes      | Column or columns that uniquely identify a row. Should match the primary key(s) on your table.                            |
 | `supabase`    | `SupabaseClient`   | Yes      | Supabase client instance used for queries, mutations, and the Realtime subscription.                                   |
+| `pageSize`    | `number`           | No       | Maximum rows requested from PostgREST per page. Defaults to `1000`. Set this no higher than your project's API row limit. |
 | `realtime`    | `boolean`          | No       | When `true`, subscribes to Postgres changes and reconciles inserts, updates, and deletes into the collection. Defaults to `false`. |
 | `realtimeUseFilter` | `boolean`    | No       | **Experimental.** Only applies when `realtime` is `true`. When `true`, each active query's `WHERE` clause is pushed to the Realtime subscription as a `postgres_changes` filter, so the channel only receives changes those queries care about. Defaults to `false`, which subscribes to every change on the table and filters client-side — simpler, at the cost of more Realtime traffic. Queries whose `WHERE` cannot be expressed as a Realtime filter (e.g. `or(...)`) transparently fall back to the unfiltered subscription. |
 | `queryClient` | `QueryClient`      | No       | TanStack Query client. If omitted, a shared global client is used.                                                     |
 
 **Returns** a collection options object to pass to `createCollection`.
+
+#### Pagination
+
+Collection reads automatically request additional PostgREST ranges when a
+query matches more rows than fit in one response. Filters, ordering, explicit
+limits, offsets, and cursor filters are applied to every page. A failure on any
+page fails the complete collection load instead of returning partial data.
+
+The default `pageSize` is `1000`, matching the default Supabase API row limit.
+If your project's API settings use a lower limit, configure `pageSize` to the
+same or a lower value:
+
+```ts
+supabaseCollectionOptions({
+  tableName: "todos",
+  schema: todosSchema,
+  keys: ["id"],
+  supabase,
+  pageSize: 500,
+})
+```
+
+Loading thousands of rows into a browser increases network, memory, and parsing
+costs. Prefer selective filters or an explicit query limit when the UI does not
+need the complete matching dataset.
 
 ---
 

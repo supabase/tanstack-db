@@ -5,6 +5,7 @@ import { BasicIndex, type Collection } from "@tanstack/db"
 import type { QueryClient } from "@tanstack/query-core"
 import { queryCollectionOptions } from "@tanstack/query-db-collection"
 import {
+  DEFAULT_PAGE_SIZE,
   subsetOptionsToQueryKey,
   supabaseOnDelete,
   supabaseOnInsert,
@@ -21,6 +22,8 @@ interface SupabaseCollectionOptions<TSchema extends StandardSchemaV1> {
    * update and delete operations.
    */
   keys: Array<keyof StandardSchemaV1.InferOutput<TSchema> & string>
+  /** Maximum number of rows requested from PostgREST at a time */
+  pageSize?: number
   /** The query client */
   queryClient?: QueryClient
   /** Whether to receive updates when a record has been inserted, updated, or deleted by another user */
@@ -92,6 +95,7 @@ const registerTable = (
 export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
   tableName,
   keys,
+  pageSize = DEFAULT_PAGE_SIZE,
   schema,
   queryClient,
   supabase,
@@ -133,7 +137,7 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
     // published. Gating the fetch on the subscription closes this gap but couples
     // every first load to Realtime connect latency, so it is intentionally left
     // out and tracked separately.
-    queryFn: (ctx) => supabaseQueryFn(supabase, tableName, ctx),
+    queryFn: (ctx) => supabaseQueryFn(supabase, tableName, ctx, pageSize),
     onInsert: (ctx) => supabaseOnInsert(supabase, tableName, ctx),
     onUpdate: (ctx) => supabaseOnUpdate(supabase, tableName, keyColumns, ctx),
     onDelete: (ctx) => supabaseOnDelete(supabase, tableName, keyColumns, ctx),

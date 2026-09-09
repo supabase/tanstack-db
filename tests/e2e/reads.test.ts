@@ -8,6 +8,35 @@ test("reads seeded rows through PostgREST", ({ usersLive }) => {
   expect(names).toEqual(["Alice", "Bob"])
 })
 
+test("reads more rows than the PostgREST response limit", async ({
+  other,
+  users,
+}) => {
+  const additionalUsers = Array.from({ length: 1001 }, (_, index) => ({
+    active: true,
+    email: `pagination-${index}@test.com`,
+    name: `Pagination User ${index}`,
+  }))
+  const { error } = await other.from("users").insert(additionalUsers)
+  expect(error).toBeNull()
+
+  const live = createLiveQueryCollection((q) =>
+    q.from({ row: users.collection }).select(({ row }) => ({
+      id: row.id,
+      name: row.name,
+      email: row.email,
+      active: row.active,
+    }))
+  )
+
+  try {
+    await live.preload()
+    await vi.waitFor(() => expect(live.size).toBe(1003), WAIT)
+  } finally {
+    await live.cleanup()
+  }
+})
+
 test("pushes a WHERE filter down to PostgREST", async ({ users }) => {
   // Seeded fixture: Alice is active, Bob is not — so active=true returns one row.
   const live = createLiveQueryCollection((q) =>
