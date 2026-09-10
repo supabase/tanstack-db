@@ -8,10 +8,12 @@ import {
   eq,
   gt,
   gte,
+  ilike,
   inArray,
   isNull,
   isUndefined,
   length,
+  like,
   lower,
   lt,
   lte,
@@ -186,18 +188,53 @@ describe("PostgREST query generation", () => {
       ])
     })
 
-    test.todo("OR: active = true OR id = 1", async () => {
+    test("WHERE name LIKE '%Ali%'", async () => {
+      await queryResult((q) =>
+        q
+          .from({ user: usersCollection })
+          .where(({ user }) => like(user.name, "%Ali%"))
+      )
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&name=like.%25Ali%25",
+      ])
+    })
+
+    test("WHERE name ILIKE '%ali%'", async () => {
+      await queryResult((q) =>
+        q
+          .from({ user: usersCollection })
+          .where(({ user }) => ilike(user.name, "%ali%"))
+      )
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&name=ilike.%25ali%25",
+      ])
+    })
+
+    test("OR: active = true OR id = 1", async () => {
       await queryResult((q) =>
         q
           .from({ user: usersCollection })
           .where(({ user }) => or(eq(user.active, true), eq(user.id, 1)))
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&active=eq.true&id=eq.1",
+        "/rest/v1/users?select=*&or=(active.eq.true,id.eq.1)",
       ])
     })
 
-    test.todo("nested AND/OR: active = true AND (id > 5 OR name = 'admin')", async () => {
+    test("OR of ILIKEs (search across columns)", async () => {
+      await queryResult((q) =>
+        q
+          .from({ user: usersCollection })
+          .where(({ user }) =>
+            or(ilike(user.name, "%ali%"), ilike(user.email, "%ali%"))
+          )
+      )
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&or=(name.ilike.%25ali%25,email.ilike.%25ali%25)",
+      ])
+    })
+
+    test("nested AND/OR: active = true AND (id > 5 OR name = 'admin')", async () => {
       await queryResult((q) =>
         q
           .from({ user: usersCollection })
@@ -208,6 +245,71 @@ describe("PostgREST query generation", () => {
             )
           )
       )
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&active=eq.true&or=(id.gt.5,name.eq.admin)",
+      ])
+    })
+
+    test("nested AND/OR of ILIKEs", async () => {
+      await queryResult((q) =>
+        q
+          .from({ user: usersCollection })
+          .where(({ user }) =>
+            and(
+              eq(user.active, true),
+              or(ilike(user.name, "%ali%"), ilike(user.email, "%ali%"))
+            )
+          )
+      )
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&active=eq.true&or=(name.ilike.%25ali%25,email.ilike.%25ali%25)",
+      ])
+    })
+
+    test("value containing a comma is quoted", async () => {
+      await queryResult((q) =>
+        q
+          .from({ user: usersCollection })
+          .where(({ user }) =>
+            or(ilike(user.name, "%a,b%"), eq(user.email, "x,y"))
+          )
+      )
+      expectFetchUrls(mockFetch, [
+        '/rest/v1/users?select=*&or=(name.ilike."%25a,b%25",email.eq."x,y")',
+      ])
+    })
+
+    test("IN list quotes members containing reserved characters", async () => {
+      await queryResult((q) =>
+        q
+          .from({ user: usersCollection })
+          .where(({ user }) => inArray(user.name, ["plain", "a,b", "c(d)"]))
+      )
+      expectFetchUrls(mockFetch, [
+        '/rest/v1/users?select=*&name=in.(plain,"a,b","c(d)")',
+      ])
+    })
+
+    test("AND drops only the unpushable conjunct", async () => {
+      await queryResult((q) =>
+        q
+          .from({ user: usersCollection })
+          .where(({ user }) =>
+            and(eq(user.active, true), eq(upper(user.name), "ALICE"))
+          )
+      )
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&active=eq.true"])
+    })
+
+    test("OR containing an unpushable branch is dropped entirely", async () => {
+      await queryResult((q) =>
+        q
+          .from({ user: usersCollection })
+          .where(({ user }) =>
+            or(eq(user.active, true), eq(upper(user.name), "ALICE"))
+          )
+      )
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
     })
   })
 

@@ -5,112 +5,59 @@ import {
   extractSimpleComparisons,
   type InsertMutationFnParams,
   type LoadSubsetOptions,
-  parseLoadSubsetOptions,
   parseOrderByExpression,
-  parseWhereExpression,
   type SimpleComparison,
   type UpdateMutationFnParams,
 } from "@tanstack/db"
 import type { QueryClient, QueryMeta } from "@tanstack/query-core"
+import {
+  applyPostgrestParams,
+  paramsToKey,
+  toPostgrestParams,
+} from "./postgrest-filters"
 import { CLIENT_INFO, CLIENT_INFO_HEADER } from "./request-headers"
 
-const mergeInFilters = (filters: SimpleComparison[]) => {
-  const mergedFilters: SimpleComparison[] = []
-  const filtersByField = new Map<string, SimpleComparison>()
+type GenericPostgrestFilterBuilder = PostgrestFilterBuilder<any, any, any, any>
 
-  for (const filter of filters) {
-    const field = filter.field?.join(".")
-    if (filter.operator !== "in" || !field) {
-      mergedFilters.push(filter)
-      continue
-    }
-
-    const values = Array.isArray(filter.value) ? filter.value : [filter.value]
-    const existingFilter = filtersByField.get(field)
-    if (existingFilter) {
-      existingFilter.value = Array.from(
-        new Set([...(existingFilter.value as unknown[]), ...values])
-      )
-      continue
-    }
-
-    const mergedFilter = {
-      ...filter,
-      value: Array.from(new Set(values)),
-    }
-    mergedFilters.push(mergedFilter)
-    filtersByField.set(field, mergedFilter)
-  }
-
-  return mergedFilters
-}
-
+/** Cursor filters arrive pre-flattened as `SimpleComparison`, not as IR. */
 const buildQuery = (
-  baseQuery: PostgrestFilterBuilder<any, any, any, any>,
+  baseQuery: GenericPostgrestFilterBuilder,
   filter: SimpleComparison
-) => {
+): GenericPostgrestFilterBuilder => {
+  const field = filter.field.join(".")
   if (filter.operator === "eq") {
-    baseQuery = baseQuery.eq(filter.field?.join("."), filter.value)
-  } else if (filter.operator === "gt") {
-    baseQuery = baseQuery.gt(filter.field?.join("."), filter.value)
-  } else if (filter.operator === "gte") {
-    baseQuery = baseQuery.gte(filter.field?.join("."), filter.value)
-  } else if (filter.operator === "lt") {
-    baseQuery = baseQuery.lt(filter.field?.join("."), filter.value)
-  } else if (filter.operator === "lte") {
-    baseQuery = baseQuery.lte(filter.field?.join("."), filter.value)
-  } else if (filter.operator === "in") {
-    baseQuery = baseQuery.in(filter.field?.join("."), filter.value)
-  } else if (filter.operator === "isNull") {
-    baseQuery = baseQuery.is(filter.field?.join("."), null)
-  } else if (filter.operator === "not_eq") {
-    baseQuery = baseQuery.not(filter.field?.join("."), "eq", filter.value)
-  } else {
-    console.warn(`buildQuery: unsupported operator: ${filter.operator}`)
+    return baseQuery.eq(field, filter.value)
   }
+  if (filter.operator === "gt") {
+    return baseQuery.gt(field, filter.value)
+  }
+  if (filter.operator === "gte") {
+    return baseQuery.gte(field, filter.value)
+  }
+  if (filter.operator === "lt") {
+    return baseQuery.lt(field, filter.value)
+  }
+  if (filter.operator === "lte") {
+    return baseQuery.lte(field, filter.value)
+  }
+  if (filter.operator === "in") {
+    return baseQuery.in(field, filter.value)
+  }
+  if (filter.operator === "isNull") {
+    return baseQuery.is(field, null)
+  }
+  if (filter.operator === "not_eq") {
+    return baseQuery.not(field, "eq", filter.value)
+  }
+  console.warn(`buildQuery: unsupported operator: ${filter.operator}`)
+  return baseQuery
 }
 
 export const subsetOptionsToQueryKey = (
   tableName: string,
   ctx: LoadSubsetOptions
 ) => {
-  const filters = parseWhereExpression(ctx.where, {
-    handlers: {
-      eq: (field, value) => {
-        return `${field.join(".")}=eq.${value}`
-      },
-      or: (field, value) => {
-        return `or(${field},${value})`
-      },
-      isNull: (field) => `${field.join(".")}=is.null`,
-      in: (field, value) => {
-        const uniqueValues = Array.from(new Set(value))
-        return `${field.join(".")}=in.${uniqueValues}`
-      },
-      and: (...filters) => {
-        return `${filters.map((filter) => filter).join("&")}`
-      },
-      gt: (field, value) => {
-        return `${field.join(".")}=gt.${value}`
-      },
-      gte: (field, value) => {
-        return `${field.join(".")}=gte.${value}`
-      },
-      lt: (field, value) => {
-        return `${field.join(".")}=lt.${value}`
-      },
-      lte: (field, value) => {
-        return `${field.join(".")}=lte.${value}`
-      },
-      not: (field, operator, value) => {
-        return field
-      },
-    },
-    onUnknownOperator: (operator, args) => {
-      console.warn(`Unsupported operator: ${operator}`)
-      return null
-    },
-  })
+  const filters = paramsToKey(toPostgrestParams(ctx.where, { mergeIn: true }))
 
   const sorts = parseOrderByExpression(ctx.orderBy)
   const limit = ctx.limit
@@ -150,39 +97,36 @@ export const supabaseQueryFn = async (
   const { limit, orderBy, offset, where, cursor } =
     ctx.meta?.loadSubsetOptions || {}
 
-  let cursorFilters: SimpleComparison[] = []
+  let cursorFilters: Array<SimpleComparison> = []
   if (cursor) {
     cursorFilters = [...extractSimpleComparisons(cursor.whereFrom)]
   }
-  // Parse the expressions into simple format
-  const parsed = parseLoadSubsetOptions({ orderBy, limit, where })
-  // console.log(tableName, parsed);
-  // console.log(tableName, cursorFilters);
+  const sorts = parseOrderByExpression(orderBy)
 
-  let baseQuery = supabase
+  let baseQuery: GenericPostgrestFilterBuilder = supabase
     .from(tableName)
     .select("*")
     .setHeader(CLIENT_INFO_HEADER, CLIENT_INFO)
 
-  if (parsed.limit) {
-    baseQuery = baseQuery.limit(parsed.limit)
+  if (limit) {
+    baseQuery = baseQuery.limit(limit)
   }
 
   if (offset) {
     baseQuery = baseQuery.range(offset, offset + 5)
   }
-  if (parsed.sorts) {
-    parsed.sorts.forEach((sort) => {
-      baseQuery = baseQuery.order(sort.field.join("."), {
-        ascending: sort.direction === "asc",
-      })
+  for (const sort of sorts) {
+    baseQuery = baseQuery.order(sort.field.join("."), {
+      ascending: sort.direction === "asc",
     })
   }
 
-  if (parsed.filters) {
-    mergeInFilters([...parsed.filters, ...cursorFilters]).forEach((filter) => {
-      buildQuery(baseQuery, filter)
-    })
+  baseQuery = applyPostgrestParams(
+    baseQuery,
+    toPostgrestParams(where, { mergeIn: true })
+  )
+  for (const filter of cursorFilters) {
+    baseQuery = buildQuery(baseQuery, filter)
   }
 
   const { data, error } = await baseQuery
