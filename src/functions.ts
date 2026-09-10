@@ -1,22 +1,16 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import {
   type DeleteMutationFnParams,
-  extractSimpleComparisons,
   type InsertMutationFnParams,
   type LoadSubsetOptions,
   parseOrderByExpression,
-  type SimpleComparison,
   type UpdateMutationFnParams,
 } from "@tanstack/db"
 import type { QueryClient, QueryMeta } from "@tanstack/query-core"
 import {
-  appendLimit,
-  appendOffset,
-  appendOrder,
-  cursorToPostgrestParams,
-  type PostgrestParam,
+  keyColumnsToSearch,
+  loadSubsetOptionsToSearch,
   paramsToKey,
-  paramsToSearch,
   toPostgrestParams,
 } from "./postgrest-filters"
 import { postgrestRequest } from "./postgrest-request"
@@ -62,54 +56,13 @@ export const supabaseQueryFn = async (
     direction?: unknown
   }
 ) => {
-  const { limit, orderBy, offset, where, cursor } =
-    ctx.meta?.loadSubsetOptions || {}
-
-  let cursorFilters: Array<SimpleComparison> = []
-  if (cursor) {
-    cursorFilters = [...extractSimpleComparisons(cursor.whereFrom)]
-  }
-  const sorts = parseOrderByExpression(orderBy)
-
-  const params: PostgrestParam[] = [
-    ...toPostgrestParams(where, { mergeIn: true }),
-    ...cursorToPostgrestParams(cursorFilters),
-  ]
-  const search = new URLSearchParams()
-  search.set("select", "*")
-  for (const [key, value] of paramsToSearch(params)) {
-    search.append(key, value)
-  }
-
-  appendOrder(
-    search,
-    sorts.map((sort) => ({
-      column: sort.field.join("."),
-      ascending: sort.direction === "asc",
-    }))
-  )
-  if (limit) {
-    appendLimit(search, limit)
-  }
-  if (offset) {
-    appendOffset(search, offset)
-  }
-
+  const search = loadSubsetOptionsToSearch(ctx.meta?.loadSubsetOptions ?? {})
   const data = await postgrestRequest(supabase, tableName, {
     method: "GET",
     search,
   })
   return data || []
 }
-
-/** Build the `key.eq.value` params that match a row by its key columns. */
-const keyParams = (keys: string[], item: any): PostgrestParam[] =>
-  keys.map((key) => ({
-    kind: "column",
-    column: key,
-    operator: "eq",
-    value: `${item[key]}`,
-  }))
 
 export const supabaseOnInsert = async (
   supabase: SupabaseClient,
@@ -118,11 +71,9 @@ export const supabaseOnInsert = async (
 ) => {
   await Promise.all(
     transaction.mutations.map(async (mutation) => {
-      const search = new URLSearchParams()
-      search.set("select", "*")
       const data = await postgrestRequest(supabase, tableName, {
         method: "POST",
-        search,
+        search: new URLSearchParams({ select: "*" }),
         body: { ...mutation.modified },
         returnRows: true,
         single: true,
@@ -146,7 +97,7 @@ export const supabaseOnUpdate = async (
   await Promise.all(
     transaction.mutations.map(async (mutation) => {
       const { original, changes } = mutation
-      const search = paramsToSearch(keyParams(keys, original))
+      const search = keyColumnsToSearch(keys, original)
       search.set("select", "*")
       const data = await postgrestRequest(supabase, tableName, {
         method: "PATCH",
@@ -174,7 +125,7 @@ export const supabaseOnDelete = async (
     transaction.mutations.map(async (mutation) => {
       await postgrestRequest(supabase, tableName, {
         method: "DELETE",
-        search: paramsToSearch(keyParams(keys, mutation.original)),
+        search: keyColumnsToSearch(keys, mutation.original),
       })
 
       // The data has been deleted and confirmed by the server, so we can write it to the collection

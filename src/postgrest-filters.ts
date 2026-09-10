@@ -1,4 +1,9 @@
-import type { SimpleComparison } from "@tanstack/db"
+import {
+  extractSimpleComparisons,
+  type LoadSubsetOptions,
+  parseOrderByExpression,
+  type SimpleComparison,
+} from "@tanstack/db"
 import type { SerializedExpression as Expression } from "./serialize"
 
 type Comparison = { column: string; operator: string; value: string }
@@ -256,4 +261,59 @@ export function appendLimit(search: URLSearchParams, limit: number): void {
 
 export function appendOffset(search: URLSearchParams, offset: number): void {
   search.set("offset", `${offset}`)
+}
+
+/**
+ * Build the full read query string for a TanStack DB subset load: `select=*`
+ * plus where filters, cursor filters, order, limit, and offset. Both the read
+ * query fn and the query key derive from `LoadSubsetOptions`, so keeping this
+ * the single translator prevents the key and the request URL from drifting.
+ */
+export function loadSubsetOptionsToSearch(
+  options: LoadSubsetOptions
+): URLSearchParams {
+  const { where, orderBy, limit, offset, cursor } = options
+  const cursorFilters = cursor
+    ? [...extractSimpleComparisons(cursor.whereFrom)]
+    : []
+
+  const search = new URLSearchParams()
+  search.set("select", "*")
+  const filters = paramsToSearch([
+    ...toPostgrestParams(where, { mergeIn: true }),
+    ...cursorToPostgrestParams(cursorFilters),
+  ])
+  for (const [key, value] of filters) {
+    search.append(key, value)
+  }
+
+  appendOrder(
+    search,
+    parseOrderByExpression(orderBy).map((sort) => ({
+      column: sort.field.join("."),
+      ascending: sort.direction === "asc",
+    }))
+  )
+  if (limit) {
+    appendLimit(search, limit)
+  }
+  if (offset) {
+    appendOffset(search, offset)
+  }
+  return search
+}
+
+/** Build the `key.eq.value` search that matches one row by its key columns. */
+export function keyColumnsToSearch(
+  keys: string[],
+  item: Record<string, unknown>
+): URLSearchParams {
+  return paramsToSearch(
+    keys.map((key) => ({
+      kind: "column",
+      column: key,
+      operator: "eq",
+      value: `${item[key]}`,
+    }))
+  )
 }
