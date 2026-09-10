@@ -40,141 +40,132 @@ const sort = (ref: IR.PropRef, direction: "asc" | "desc") => ({
 })
 
 // ── subsetParamsToSearch ────────────────────────────────────────────
+// Most tests here exercise the WHERE quoting/negation/IN/null/wildcard logic,
+// which lives in a single internal translator shared by every builder;
+// subsetParamsToSearch is its thinnest public wrapper.
 describe("subsetParamsToSearch", () => {
-  // The quoting/negation/IN/null/wildcard logic lives in a single internal
-  // translator shared by every builder; subsetParamsToSearch is its thinnest
-  // public wrapper, so the shared behaviour is exercised once here.
-  describe("WHERE serialization", () => {
-    const filters = (where: IR.BasicExpression<boolean>) =>
-      subsetParamsToSearch({ where })
+  const filters = (where: IR.BasicExpression<boolean>) =>
+    subsetParamsToSearch({ where })
 
-    test.each([
-      [eq(id, 1), "eq.1"],
-      [gt(id, 1), "gt.1"],
-      [gte(id, 1), "gte.1"],
-      [lt(id, 1), "lt.1"],
-      [lte(id, 1), "lte.1"],
-      [isNull(id), "is.null"],
-      [inArray(id, [1, 2, 3]), "in.(1,2,3)"],
-    ])("renders comparison operators: %s", (where, expected) => {
-      expect(filters(where).get("id")).toBe(expected)
-    })
+  test.each([
+    [eq(id, 1), "eq.1"],
+    [gt(id, 1), "gt.1"],
+    [gte(id, 1), "gte.1"],
+    [lt(id, 1), "lt.1"],
+    [lte(id, 1), "lte.1"],
+    [isNull(id), "is.null"],
+    [inArray(id, [1, 2, 3]), "in.(1,2,3)"],
+  ])("renders comparison operators: %s", (where, expected) => {
+    expect(filters(where).get("id")).toBe(expected)
+  })
 
-    test("leaves top-level scalar values raw (unquoted)", () => {
-      expect(filters(eq(name, "a,b(c)")).get("name")).toBe("eq.a,b(c)")
-    })
+  test("leaves top-level scalar values raw (unquoted)", () => {
+    expect(filters(eq(name, "a,b(c)")).get("name")).toBe("eq.a,b(c)")
+  })
 
-    test("preserves AND branches inside OR", () => {
-      expect(
-        filters(or(and(eq(active, true), gt(id, 1)), eq(name, "Bob"))).get("or")
-      ).toBe("(and(active.eq.true,id.gt.1),name.eq.Bob)")
-    })
+  test("preserves AND branches inside OR", () => {
+    expect(
+      filters(or(and(eq(active, true), gt(id, 1)), eq(name, "Bob"))).get("or")
+    ).toBe("(and(active.eq.true,id.gt.1),name.eq.Bob)")
+  })
 
-    test.each([and, or])("negates logical groups", (logical) => {
-      expect(
-        filters(not(logical(eq(active, true), eq(name, "Bob")))).get("or")
-      ).toBe(
-        logical === and
-          ? "(active.not.eq.true,name.not.eq.Bob)"
-          : "(and(active.not.eq.true,name.not.eq.Bob))"
-      )
-    })
+  test.each([and, or])("negates logical groups", (logical) => {
+    expect(
+      filters(not(logical(eq(active, true), eq(name, "Bob")))).get("or")
+    ).toBe(
+      logical === and
+        ? "(active.not.eq.true,name.not.eq.Bob)"
+        : "(and(active.not.eq.true,name.not.eq.Bob))"
+    )
+  })
 
-    test("supports double negation of comparisons and logical groups", () => {
-      expect(filters(not(not(eq(name, "Alice")))).get("name")).toBe("eq.Alice")
-      expect(
-        filters(not(not(or(eq(name, "Alice"), eq(id, 2))))).get("or")
-      ).toBe("(name.eq.Alice,id.eq.2)")
-    })
+  test("supports double negation of comparisons and logical groups", () => {
+    expect(filters(not(not(eq(name, "Alice")))).get("name")).toBe("eq.Alice")
+    expect(filters(not(not(or(eq(name, "Alice"), eq(id, 2))))).get("or")).toBe(
+      "(name.eq.Alice,id.eq.2)"
+    )
+  })
 
-    test("preserves multiple OR parameters under AND", () => {
-      expect(
-        filters(
-          and(or(eq(id, 1), eq(id, 2)), or(eq(name, "Alice"), eq(name, "Bob")))
-        ).getAll("or")
-      ).toEqual(["(id.eq.1,id.eq.2)", "(name.eq.Alice,name.eq.Bob)"])
-    })
+  test("preserves multiple OR parameters under AND", () => {
+    expect(
+      filters(
+        and(or(eq(id, 1), eq(id, 2)), or(eq(name, "Alice"), eq(name, "Bob")))
+      ).getAll("or")
+    ).toEqual(["(id.eq.1,id.eq.2)", "(name.eq.Alice,name.eq.Bob)"])
+  })
 
-    test.each([
-      ["", '""'],
-      [" a ", '" a "'],
-      ["a,b(c)", '"a,b(c)"'],
-      ['a"b\\c', '"a\\"b\\\\c"'],
-      ["a.b:c&d=1+%", "a.b:c&d=1+%"],
-    ])("quotes logical values and IN members: %j", (value, quoted) => {
-      expect(filters(or(eq(name, value), eq(id, 2))).get("or")).toBe(
-        `(name.eq.${quoted},id.eq.2)`
-      )
-      expect(filters(inArray(name, [value, value])).get("name")).toBe(
-        value === "" ? "eq." : `in.(${quoted})`
-      )
-      expect(filters(not(inArray(name, [value]))).get("name")).toBe(
-        value === "" ? "not.eq." : `not.in.(${quoted})`
-      )
-    })
+  test.each([
+    ["", '""'],
+    [" a ", '" a "'],
+    ["a,b(c)", '"a,b(c)"'],
+    ['a"b\\c', '"a\\"b\\\\c"'],
+    ["a.b:c&d=1+%", "a.b:c&d=1+%"],
+  ])("quotes logical values and IN members: %j", (value, quoted) => {
+    expect(filters(or(eq(name, value), eq(id, 2))).get("or")).toBe(
+      `(name.eq.${quoted},id.eq.2)`
+    )
+    expect(filters(inArray(name, [value, value])).get("name")).toBe(
+      value === "" ? "eq." : `in.(${quoted})`
+    )
+    expect(filters(not(inArray(name, [value]))).get("name")).toBe(
+      value === "" ? "not.eq." : `not.in.(${quoted})`
+    )
+  })
 
-    test("renders negated comparisons inside OR", () => {
-      expect(
-        filters(or(not(isNull(name)), not(inArray(name, ["a,b", "c"])))).get(
-          "or"
-        )
-      ).toBe('(name.not.is.null,name.not.in.("a,b",c))')
-    })
+  test("renders negated comparisons inside OR", () => {
+    expect(
+      filters(or(not(isNull(name)), not(inArray(name, ["a,b", "c"])))).get("or")
+    ).toBe('(name.not.is.null,name.not.in.("a,b",c))')
+  })
 
-    test("does not union IN constraints inside logical groups", () => {
-      expect(
-        filters(
-          or(and(inArray(id, [1, 2]), inArray(id, [2, 3])), eq(active, true))
-        ).get("or")
-      ).toBe("(and(id.in.(1,2),id.in.(2,3)),active.eq.true)")
-    })
+  test("does not union IN constraints inside logical groups", () => {
+    expect(
+      filters(
+        or(and(inArray(id, [1, 2]), inArray(id, [2, 3])), eq(active, true))
+      ).get("or")
+    ).toBe("(and(id.in.(1,2),id.in.(2,3)),active.eq.true)")
+  })
 
-    test("renders empty IN lists with SQL null semantics", () => {
-      expect(filters(inArray(id, [])).get("id")).toBe("in.()")
-      expect(filters(not(inArray(id, []))).get("id")).toBe("not.is.null")
-      expect(filters(not(not(inArray(id, [])))).get("id")).toBe("in.()")
-    })
+  test("renders empty IN lists with SQL null semantics", () => {
+    expect(filters(inArray(id, [])).get("id")).toBe("in.()")
+    expect(filters(not(inArray(id, []))).get("id")).toBe("not.is.null")
+    expect(filters(not(not(inArray(id, [])))).get("id")).toBe("in.()")
+  })
 
-    test("preserves null guards for empty IN inside a negated logical group", () => {
-      expect(
-        filters(not(and(inArray(name, []), eq(active, true)))).get("or")
-      ).toBe("(name.not.is.null,active.not.eq.true)")
-    })
+  test("preserves null guards for empty IN inside a negated logical group", () => {
+    expect(
+      filters(not(and(inArray(name, []), eq(active, true)))).get("or")
+    ).toBe("(name.not.is.null,active.not.eq.true)")
+  })
 
-    test("ignores null list members instead of matching literal null strings", () => {
-      expect(filters(inArray(name, ["Alice", null])).get("name")).toBe(
-        "in.(Alice)"
-      )
-      expect(filters(not(inArray(name, ["Alice", null]))).get("name")).toBe(
-        "not.in.(Alice)"
-      )
-      expect(filters(not(inArray(name, [null]))).get("name")).toBe(
-        "not.is.null"
-      )
-    })
+  test("ignores null list members instead of matching literal null strings", () => {
+    expect(filters(inArray(name, ["Alice", null])).get("name")).toBe(
+      "in.(Alice)"
+    )
+    expect(filters(not(inArray(name, ["Alice", null]))).get("name")).toBe(
+      "not.in.(Alice)"
+    )
+    expect(filters(not(inArray(name, [null]))).get("name")).toBe("not.is.null")
+  })
 
-    test.each([
-      like,
-      ilike,
-    ])("preserves SQL wildcards and literal backslashes", (match) => {
-      const op = match === like ? "like" : "ilike"
-      expect(filters(match(name, "A_%")).get("name")).toBe(`${op}.A_%`)
-      expect(filters(not(match(name, "a\\%"))).get("name")).toBe(
-        `not.${op}.a\\\\%`
-      )
-    })
+  test.each([
+    like,
+    ilike,
+  ])("preserves SQL wildcards and literal backslashes", (match) => {
+    const op = match === like ? "like" : "ilike"
+    expect(filters(match(name, "A_%")).get("name")).toBe(`${op}.A_%`)
+    expect(filters(not(match(name, "a\\%"))).get("name")).toBe(
+      `not.${op}.a\\\\%`
+    )
+  })
 
-    test.each([
-      ["computed OR", or(eq(active, true), eq(upper(name), "ALICE"))],
-      [
-        "computed NOT AND",
-        not(and(eq(active, true), eq(upper(name), "ALICE"))),
-      ],
-      ["literal asterisk", like(name, "*Ali*")],
-      ["negated literal asterisk", not(ilike(name, "*Ali*"))],
-    ])("drops unpushable %s, keeping the rest", (_, where) => {
-      expect([...filters(and(gt(id, 0), where))]).toEqual([["id", "gt.0"]])
-    })
+  test.each([
+    ["computed OR", or(eq(active, true), eq(upper(name), "ALICE"))],
+    ["computed NOT AND", not(and(eq(active, true), eq(upper(name), "ALICE")))],
+    ["literal asterisk", like(name, "*Ali*")],
+    ["negated literal asterisk", not(ilike(name, "*Ali*"))],
+  ])("drops unpushable %s, keeping the rest", (_, where) => {
+    expect([...filters(and(gt(id, 0), where))]).toEqual([["id", "gt.0"]])
   })
 
   test("appends a single order direction", () => {
