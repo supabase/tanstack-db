@@ -1,15 +1,15 @@
 import type { SerializedExpression as Expression } from "../serialize"
 
+type Comparison = { column: string; operator: string; value: string }
+export type PostgrestParam =
+  | ({ kind: "column" } & Comparison)
+  | { kind: "group"; filter: string }
+
 interface FilterOptions {
   mergeIn?: boolean
   strict?: boolean
   stripAlias?: boolean
 }
-
-type Comparison = { column: string; operator: string; value: string }
-export type PostgrestParam =
-  | ({ kind: "column" } & Comparison)
-  | { kind: "group"; filter: string }
 
 /** Set the comma-joined `order` param (independent of limit/offset). */
 export function appendOrder(
@@ -48,68 +48,6 @@ function flattenAnd(expr: Expression): Expression[] {
   return expr.type === "func" && expr.name === "and"
     ? expr.args.flatMap(flattenAnd)
     : [expr]
-}
-
-// Embedded expressions are all-or-nothing. Dropping a child of OR or NOT
-// could narrow the response and permanently lose matching rows.
-function toFilterString(
-  expr: Expression,
-  options: FilterOptions,
-  negated = false
-): string | null {
-  if (expr.type !== "func") return null
-  if (expr.name === "not") {
-    return expr.args[0] ? toFilterString(expr.args[0], options, !negated) : null
-  }
-  if (expr.name === "and" || expr.name === "or") {
-    if (expr.args.length === 0) return null
-    // Move NOT down to comparisons with De Morgan's laws. In particular, an
-    // empty IN list needs its null guard even under a negated logical group.
-    const operator = negated ? (expr.name === "and" ? "or" : "and") : expr.name
-    const parts = expr.args.map((arg) => toFilterString(arg, options, negated))
-    return parts.includes(null) ? null : `${operator}(${parts.join(",")})`
-  }
-  const comparison = renderComparison(
-    negated ? { type: "func", name: "not", args: [expr] } : expr,
-    true,
-    options
-  )
-  return comparison
-    ? `${comparison.column}.${comparison.operator}.${comparison.value}`
-    : null
-}
-
-// Preserve the live adapter's union of duplicate IN demands. This deliberately
-// fetches a superset, which TanStack re-filters. Never do this inside OR/NOT or
-// for server aggregates, where client-side filtering cannot repair the result.
-function mergeInFilters(filters: Expression[]): Expression[] {
-  const merged: Expression[] = []
-  const valuesByField = new Map<string, unknown[]>()
-  for (const filter of filters) {
-    if (filter.type !== "func" || filter.name !== "in") {
-      merged.push(filter)
-      continue
-    }
-    const [left, right] = filter.args
-    if (
-      left?.type !== "ref" ||
-      right?.type !== "val" ||
-      !Array.isArray(right.value)
-    ) {
-      merged.push(filter)
-      continue
-    }
-    const field = JSON.stringify(left.path)
-    const existing = valuesByField.get(field)
-    if (existing) {
-      existing.push(...right.value)
-    } else {
-      const values = [...right.value]
-      valuesByField.set(field, values)
-      merged.push({ ...filter, args: [left, { type: "val", value: values }] })
-    }
-  }
-  return merged
 }
 
 // Only lists and logical groups parse quoted values. Top-level scalar values
@@ -181,6 +119,68 @@ function renderComparison(
     operator: expr.name,
     value: quoteScalars ? quoteValue(value) : `${value}`,
   }
+}
+
+// Embedded expressions are all-or-nothing. Dropping a child of OR or NOT
+// could narrow the response and permanently lose matching rows.
+function toFilterString(
+  expr: Expression,
+  options: FilterOptions,
+  negated = false
+): string | null {
+  if (expr.type !== "func") return null
+  if (expr.name === "not") {
+    return expr.args[0] ? toFilterString(expr.args[0], options, !negated) : null
+  }
+  if (expr.name === "and" || expr.name === "or") {
+    if (expr.args.length === 0) return null
+    // Move NOT down to comparisons with De Morgan's laws. In particular, an
+    // empty IN list needs its null guard even under a negated logical group.
+    const operator = negated ? (expr.name === "and" ? "or" : "and") : expr.name
+    const parts = expr.args.map((arg) => toFilterString(arg, options, negated))
+    return parts.includes(null) ? null : `${operator}(${parts.join(",")})`
+  }
+  const comparison = renderComparison(
+    negated ? { type: "func", name: "not", args: [expr] } : expr,
+    true,
+    options
+  )
+  return comparison
+    ? `${comparison.column}.${comparison.operator}.${comparison.value}`
+    : null
+}
+
+// Preserve the live adapter's union of duplicate IN demands. This deliberately
+// fetches a superset, which TanStack re-filters. Never do this inside OR/NOT or
+// for server aggregates, where client-side filtering cannot repair the result.
+function mergeInFilters(filters: Expression[]): Expression[] {
+  const merged: Expression[] = []
+  const valuesByField = new Map<string, unknown[]>()
+  for (const filter of filters) {
+    if (filter.type !== "func" || filter.name !== "in") {
+      merged.push(filter)
+      continue
+    }
+    const [left, right] = filter.args
+    if (
+      left?.type !== "ref" ||
+      right?.type !== "val" ||
+      !Array.isArray(right.value)
+    ) {
+      merged.push(filter)
+      continue
+    }
+    const field = JSON.stringify(left.path)
+    const existing = valuesByField.get(field)
+    if (existing) {
+      existing.push(...right.value)
+    } else {
+      const values = [...right.value]
+      valuesByField.set(field, values)
+      merged.push({ ...filter, args: [left, { type: "val", value: values }] })
+    }
+  }
+  return merged
 }
 
 export function toPostgrestParams(
