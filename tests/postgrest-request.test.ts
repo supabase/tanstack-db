@@ -8,9 +8,9 @@ import {
   cursorToPostgrestParams,
   paramsToKey,
   paramsToSearch,
+  queryIrToSearch,
   toPostgrestParams,
 } from "../src/postgrest-filters"
-import { buildSupabaseQuery } from "../src/query-once"
 import { createMockFetch, SUPABASE_KEY, SUPABASE_URL } from "./test.utils"
 
 describe("request-state escape hatch", () => {
@@ -53,14 +53,11 @@ describe("param helpers", () => {
 })
 
 describe("offset without limit", () => {
-  test("buildSupabaseQuery emits offset independently of limit", () => {
-    const { search } = buildSupabaseQuery(
-      createClient(SUPABASE_URL, SUPABASE_KEY),
-      {
-        from: { type: "table", name: "users", alias: "user" },
-        offset: 20,
-      }
-    )
+  test("queryIrToSearch emits offset independently of limit", () => {
+    const { search } = queryIrToSearch({
+      from: { type: "table", name: "users", alias: "user" },
+      offset: 20,
+    })
     expect(search.get("offset")).toBe("20")
     expect(search.has("limit")).toBe(false)
   })
