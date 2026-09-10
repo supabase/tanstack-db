@@ -1,15 +1,12 @@
 import { createClient } from "@supabase/supabase-js"
-import { and, eq, gt, IR } from "@tanstack/db"
+import { and, eq, gt, IR, inArray } from "@tanstack/db"
 import { QueryClient } from "@tanstack/query-core"
 import { describe, expect, test } from "vitest"
-import { supabaseQueryFn } from "../src/functions"
+import { subsetOptionsToQueryKey, supabaseQueryFn } from "../src/functions"
 import {
-  appendOrder,
-  cursorToPostgrestParams,
-  paramsToKey,
-  paramsToSearch,
+  keyColumnsToSearch,
+  loadSubsetOptionsToSearch,
   queryIrToSearch,
-  toPostgrestParams,
 } from "../src/postgrest-filters"
 import { createMockFetch, SUPABASE_KEY, SUPABASE_URL } from "./test.utils"
 
@@ -25,35 +22,28 @@ describe("request-state escape hatch", () => {
   })
 })
 
-describe("param helpers", () => {
-  test("appendOrder merges multiple sorts into one comma-joined value", () => {
-    const search = new URLSearchParams()
-    appendOrder(search, [
-      { column: "id", ascending: true },
-      { column: "name", ascending: false },
-    ])
+describe("queryIrToSearch", () => {
+  test("merges multiple orderBy into one comma-joined order", () => {
+    const { search } = queryIrToSearch({
+      from: { type: "table", name: "users", alias: "user" },
+      orderBy: [
+        {
+          expression: { type: "ref", path: ["user", "id"] },
+          direction: "asc",
+          nulls: "last",
+        },
+        {
+          expression: { type: "ref", path: ["user", "name"] },
+          direction: "desc",
+          nulls: "last",
+        },
+      ],
+    })
     expect(search.get("order")).toBe("id.asc,name.desc")
     expect(search.getAll("order")).toHaveLength(1)
   })
 
-  test("cursorToPostgrestParams quotes IN members and leaves scalars raw", () => {
-    const params = cursorToPostgrestParams([
-      { field: ["name"], operator: "in", value: ["a,b", "c"] },
-      { field: ["id"], operator: "gt", value: 5 },
-      { field: ["deleted_at"], operator: "isNull" },
-    ])
-    expect(paramsToKey(params)).toBe(
-      new URLSearchParams([
-        ["name", 'in.("a,b",c)'],
-        ["id", "gt.5"],
-        ["deleted_at", "is.null"],
-      ]).toString()
-    )
-  })
-})
-
-describe("offset without limit", () => {
-  test("queryIrToSearch emits offset independently of limit", () => {
+  test("emits offset independently of limit", () => {
     const { search } = queryIrToSearch({
       from: { type: "table", name: "users", alias: "user" },
       offset: 20,
@@ -63,17 +53,39 @@ describe("offset without limit", () => {
   })
 })
 
+describe("loadSubsetOptionsToSearch", () => {
+  test("quotes cursor IN members", () => {
+    const name = new IR.PropRef<string>(["name"])
+    const search = loadSubsetOptionsToSearch({
+      cursor: {
+        whereFrom: inArray(name, ["a,b", "c"]),
+        whereCurrent: eq(name, "z"),
+      },
+    })
+    expect(search.get("name")).toBe('in.("a,b",c)')
+  })
+})
+
+describe("keyColumnsToSearch", () => {
+  test("builds an eq filter per key column", () => {
+    const search = keyColumnsToSearch(["user_id", "todo_id"], {
+      user_id: 1,
+      todo_id: 2,
+      title: "ignored",
+    })
+    expect(search.get("user_id")).toBe("eq.1")
+    expect(search.get("todo_id")).toBe("eq.2")
+    expect([...search.keys()]).toEqual(["user_id", "todo_id"])
+  })
+})
+
 describe("query key matches request URL", () => {
-  test("the cache key filters string equals the sent search string", async () => {
+  test("the cache key encodes the same filters as the sent request", async () => {
     const name = new IR.PropRef<string>(["name"])
     const id = new IR.PropRef<number>(["id"])
     const where = and(eq(name, "Alice&x=1"), gt(id, 3))
 
-    const key = paramsToKey(toPostgrestParams(where, { mergeIn: true }))
-    const requestSearch = paramsToSearch(
-      toPostgrestParams(where, { mergeIn: true })
-    ).toString()
-    expect(key).toBe(requestSearch)
+    const [, keyString] = subsetOptionsToQueryKey("users", { where })
 
     const mockFetch = createMockFetch()
     const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -88,8 +100,8 @@ describe("query key matches request URL", () => {
     const sent = new URL(String(mockFetch.mock.calls[0][0])).searchParams
     sent.delete("select")
     // Every filter param in the key is present verbatim in the request.
-    for (const [k, v] of new URLSearchParams(key)) {
-      expect(sent.getAll(k)).toContain(v)
+    for (const [key, value] of new URLSearchParams(keyString)) {
+      expect(sent.getAll(key)).toContain(value)
     }
   })
 })

@@ -14,7 +14,7 @@ import type {
 } from "./serialize"
 
 type Comparison = { column: string; operator: string; value: string }
-export type PostgrestParam =
+type PostgrestParam =
   | ({ kind: "column" } & Comparison)
   | { kind: "group"; filter: string }
 
@@ -163,7 +163,7 @@ function mergeInFilters(filters: Expression[]): Expression[] {
   return merged
 }
 
-export function toPostgrestParams(
+function toPostgrestParams(
   expr: Expression | undefined | null,
   options: FilterOptions = {}
 ): PostgrestParam[] {
@@ -192,7 +192,7 @@ export function toPostgrestParams(
 }
 
 /** Render params as the `URLSearchParams` sent to (and keyed by) PostgREST. */
-export function paramsToSearch(params: PostgrestParam[]): URLSearchParams {
+function paramsToSearch(params: PostgrestParam[]): URLSearchParams {
   const search = new URLSearchParams()
   for (const param of params) {
     if (param.kind === "column")
@@ -200,10 +200,6 @@ export function paramsToSearch(params: PostgrestParam[]): URLSearchParams {
     else search.append("or", `(${param.filter})`)
   }
   return search
-}
-
-export function paramsToKey(params: PostgrestParam[]): string {
-  return paramsToSearch(params).toString()
 }
 
 // Cursor operators arrive pre-flattened as `SimpleComparison`. Scalar values
@@ -218,7 +214,7 @@ const CURSOR_SCALAR_OPERATORS: Record<string, string> = {
 }
 
 /** Convert pre-flattened cursor comparisons to PostgREST params. */
-export function cursorToPostgrestParams(
+function cursorToPostgrestParams(
   filters: SimpleComparison[]
 ): PostgrestParam[] {
   return filters.flatMap((filter): PostgrestParam[] => {
@@ -249,7 +245,7 @@ export function cursorToPostgrestParams(
 }
 
 /** Set the comma-joined `order` param (independent of limit/offset). */
-export function appendOrder(
+function appendOrder(
   search: URLSearchParams,
   sorts: Array<{ column: string; ascending: boolean }>
 ): void {
@@ -262,11 +258,11 @@ export function appendOrder(
   )
 }
 
-export function appendLimit(search: URLSearchParams, limit: number): void {
+function appendLimit(search: URLSearchParams, limit: number): void {
   search.set("limit", `${limit}`)
 }
 
-export function appendOffset(search: URLSearchParams, offset: number): void {
+function appendOffset(search: URLSearchParams, offset: number): void {
   search.set("offset", `${offset}`)
 }
 
