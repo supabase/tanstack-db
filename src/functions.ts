@@ -102,8 +102,14 @@ export const supabaseQueryFn = async (
   return data || []
 }
 
-/** Build the `key.eq.value` params matching a row for update/delete. */
-export type KeyParams = (item: any) => PostgrestParam[]
+/** Build the `key.eq.value` params that match a row by its key columns. */
+const keyParams = (keys: string[], item: any): PostgrestParam[] =>
+  keys.map((key) => ({
+    kind: "column",
+    column: key,
+    operator: "eq",
+    value: `${item[key]}`,
+  }))
 
 export const supabaseOnInsert = async (
   supabase: SupabaseClient,
@@ -134,13 +140,13 @@ export const supabaseOnInsert = async (
 export const supabaseOnUpdate = async (
   supabase: SupabaseClient,
   tableName: string,
-  keyParams: KeyParams,
+  keys: string[],
   { transaction, collection }: UpdateMutationFnParams<any, any, any>
 ) => {
   await Promise.all(
     transaction.mutations.map(async (mutation) => {
       const { original, changes } = mutation
-      const search = paramsToSearch(keyParams(original))
+      const search = paramsToSearch(keyParams(keys, original))
       search.set("select", "*")
       const data = await postgrestRequest(supabase, tableName, {
         method: "PATCH",
@@ -161,14 +167,14 @@ export const supabaseOnUpdate = async (
 export const supabaseOnDelete = async (
   supabase: SupabaseClient,
   tableName: string,
-  keyParams: KeyParams,
+  keys: string[],
   { transaction, collection }: DeleteMutationFnParams<any, any, any>
 ) => {
   await Promise.all(
     transaction.mutations.map(async (mutation) => {
       await postgrestRequest(supabase, tableName, {
         method: "DELETE",
-        search: paramsToSearch(keyParams(mutation.original)),
+        search: paramsToSearch(keyParams(keys, mutation.original)),
       })
 
       // The data has been deleted and confirmed by the server, so we can write it to the collection

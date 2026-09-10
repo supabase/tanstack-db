@@ -11,7 +11,6 @@ import {
   supabaseOnUpdate,
   supabaseQueryFn,
 } from "./functions"
-import type { PostgrestParam } from "./postgrest-filters"
 import { getQueryClient } from "./query-client"
 
 interface SupabaseCollectionOptions<TSchema extends StandardSchemaV1> {
@@ -114,15 +113,8 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
     return keys.map((key) => item[key]).join("-")
   }
 
-  // Build the where params for update and delete operations by matching every
-  // configured key column against the item's values.
-  const keyParams = (item: TItem): PostgrestParam[] =>
-    keys.map((key) => ({
-      kind: "column",
-      column: key as string,
-      operator: "eq",
-      value: `${item[key]}`,
-    }))
+  // Key columns used to match rows on update and delete.
+  const keyColumns = keys as string[]
 
   let entry: TableEntry | null = null
   if (realtime) {
@@ -137,8 +129,8 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
     syncMode: "on-demand",
     queryFn: (ctx) => supabaseQueryFn(supabase, tableName, ctx),
     onInsert: (ctx) => supabaseOnInsert(supabase, tableName, ctx),
-    onUpdate: (ctx) => supabaseOnUpdate(supabase, tableName, keyParams, ctx),
-    onDelete: (ctx) => supabaseOnDelete(supabase, tableName, keyParams, ctx),
+    onUpdate: (ctx) => supabaseOnUpdate(supabase, tableName, keyColumns, ctx),
+    onDelete: (ctx) => supabaseOnDelete(supabase, tableName, keyColumns, ctx),
     autoIndex: "eager",
     defaultIndexType: BasicIndex,
   })
