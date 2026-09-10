@@ -548,6 +548,38 @@ describe("queryOnce PostgREST query generation", () => {
       ])
     })
 
+    test("aggregate with a negated logical group", async () => {
+      await queryOnce(
+        (q) =>
+          q
+            .from({ user: usersCollection })
+            .where(({ user }) =>
+              not(and(eq(user.active, true), ilike(user.name, "%ali%")))
+            )
+            .select(({ user }) => ({ totalUsers: count(user.id) })),
+        supabase
+      )
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=totalUsers:id.count()&or=(active.not.eq.true,name.not.ilike.%25ali%25)",
+      ])
+    })
+
+    test("aggregate rejects unsupported filters before making a request", async () => {
+      await expect(
+        queryOnce(
+          (q) =>
+            q
+              .from({ user: usersCollection })
+              .where(({ user }) =>
+                or(eq(user.active, true), eq(upper(user.name), "ALICE"))
+              )
+              .select(({ user }) => ({ totalUsers: count(user.id) })),
+          supabase
+        )
+      ).rejects.toThrow("fully pushable filters")
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+
     test("aggregate with NOT(name LIKE …)", async () => {
       await queryOnce(
         (q) =>

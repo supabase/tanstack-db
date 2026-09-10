@@ -34,13 +34,18 @@ function renderComparison(
   if (expr.type !== "func") return null
   const [left, right] = expr.args
   if (expr.name === "not" && left) {
+    if (left.type === "func" && left.name === "not" && left.args[0]) {
+      return renderComparison(left.args[0], quoteScalars, options)
+    }
     const inner = renderComparison(left, quoteScalars, options)
     if (!inner) return null
+    // TanStack's NOT IN [] excludes nulls; PostgREST's NOT IN () includes them.
+    if (inner.operator === "in" && inner.value === "()") {
+      return { ...inner, operator: "not.is", value: "null" }
+    }
     return {
       ...inner,
-      operator: inner.operator.startsWith("not.")
-        ? inner.operator.slice(4)
-        : `not.${inner.operator}`,
+      operator: `not.${inner.operator}`,
     }
   }
   if (left?.type !== "ref" || left.path[0] === "$selected") return null
@@ -51,10 +56,18 @@ function renderComparison(
 
   if (expr.name === "in") {
     if (!Array.isArray(right.value)) return null
+    // TanStack's membership test ignores null list members for non-null rows.
+    const values = Array.from(
+      new Set(right.value.filter((value) => value != null))
+    )
+    // PostgREST treats IN ("") as an empty list, even when quoted.
+    if (values.length === 1 && values[0] === "") {
+      return { column, operator: "eq", value: quoteScalars ? '""' : "" }
+    }
     return {
       column,
       operator: "in",
-      value: `(${Array.from(new Set(right.value)).map(quoteValue).join(",")})`,
+      value: `(${values.map(quoteValue).join(",")})`,
     }
   }
   if (!SCALAR_OPERATORS.includes(expr.name)) return null
@@ -76,27 +89,26 @@ function renderComparison(
 // could narrow the response and permanently lose matching rows.
 function toFilterString(
   expr: Expression,
-  options: FilterOptions
+  options: FilterOptions,
+  negated = false
 ): string | null {
   if (expr.type !== "func") return null
+  if (expr.name === "not") {
+    return expr.args[0] ? toFilterString(expr.args[0], options, !negated) : null
+  }
   if (expr.name === "and" || expr.name === "or") {
     if (expr.args.length === 0) return null
-    const parts = expr.args.map((arg) => toFilterString(arg, options))
-    return parts.includes(null) ? null : `${expr.name}(${parts.join(",")})`
+    // Move NOT down to comparisons with De Morgan's laws. In particular, an
+    // empty IN list needs its null guard even under a negated logical group.
+    const operator = negated ? (expr.name === "and" ? "or" : "and") : expr.name
+    const parts = expr.args.map((arg) => toFilterString(arg, options, negated))
+    return parts.includes(null) ? null : `${operator}(${parts.join(",")})`
   }
-  if (expr.name === "not") {
-    const [inner] = expr.args
-    if (inner?.type === "func") {
-      if (inner.name === "not" && inner.args[0]) {
-        return toFilterString(inner.args[0], options)
-      }
-      if (inner.name === "and" || inner.name === "or") {
-        const filter = toFilterString(inner, options)
-        return filter === null ? null : `not.${filter}`
-      }
-    }
-  }
-  const comparison = renderComparison(expr, true, options)
+  const comparison = renderComparison(
+    negated ? { type: "func", name: "not", args: [expr] } : expr,
+    true,
+    options
+  )
   return comparison
     ? `${comparison.column}.${comparison.operator}.${comparison.value}`
     : null
@@ -156,10 +168,7 @@ export function toPostgrestParams(
       return [
         {
           kind: "group",
-          filter:
-            filter.type === "func" && filter.name === "or"
-              ? embedded.slice(3, -1)
-              : embedded,
+          filter: embedded.startsWith("or(") ? embedded.slice(3, -1) : embedded,
         },
       ]
     }

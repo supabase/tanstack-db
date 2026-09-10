@@ -183,6 +183,10 @@ Most query operations are translated to PostgREST filters and run server-side. A
 | `LIMIT`                                              | Translated to PostgREST filter syntax.                                            |
 | `JOIN`                                               | Each table is fetched separately. The join key is pushed as an `in` filter on the second query. |
 
+`like` and `ilike` use TanStack's SQL wildcards: `%` matches any sequence and `_` matches one character (for example, `ilike(user.name, "%alice%")`). Patterns containing a literal `*` are evaluated client-side because PostgREST interprets `*` as a wildcard. Filter values containing commas, parentheses, quotes, or backslashes are escaped automatically.
+
+The client-side filter fallback above applies to live queries and ordinary `queryOnce` queries. The server aggregate path in `queryOnce` requires fully pushable `WHERE` expressions and throws for unsupported filters, rather than returning an aggregate over unfiltered rows.
+
 **Evaluated Client-Side**
 
 These operations fetch the required rows and process them in memory:
