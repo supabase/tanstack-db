@@ -3,45 +3,26 @@ import {
   type DeleteMutationFnParams,
   type InsertMutationFnParams,
   type LoadSubsetOptions,
-  parseOrderByExpression,
   type UpdateMutationFnParams,
 } from "@tanstack/db"
 import type { QueryClient, QueryMeta } from "@tanstack/query-core"
 import {
   keyColumnsToSearch,
   loadSubsetOptionsToSearch,
-  paramsToKey,
-  toPostgrestParams,
+  subsetParamsToSearch,
 } from "./postgrest-filters"
 import { postgrestRequest } from "./postgrest-request"
 
 export const subsetOptionsToQueryKey = (
   tableName: string,
   ctx: LoadSubsetOptions
-) => {
-  const filters = paramsToKey(toPostgrestParams(ctx.where, { mergeIn: true }))
-
-  const sorts = parseOrderByExpression(ctx.orderBy)
-  const limit = ctx.limit
-
-  const options: Record<string, string> = {}
-  if (filters) {
-    options["filters"] = filters
-  }
-  if (sorts.length > 0) {
-    options["sorts"] = sorts
-      .map((sort) => `${sort.field.join(".")}:${sort.direction}`)
-      .join(",")
-  }
-  if (limit) {
-    options["limit"] = limit.toString()
-  }
-
-  const result: any[] = [tableName]
-  if (Object.keys(options).length > 0) {
-    result.push(options)
-  }
-  return result
+): Array<string> => {
+  // The key shares the request URL's where/order/limit encoding
+  // (`subsetParamsToSearch`) so the two cannot drift. Pagination params
+  // (cursor/offset) and the constant `select` are intentionally excluded:
+  // pages of one subset must share a cache key.
+  const key = subsetParamsToSearch(ctx).toString()
+  return key ? [tableName, key] : [tableName]
 }
 
 export const supabaseQueryFn = async (

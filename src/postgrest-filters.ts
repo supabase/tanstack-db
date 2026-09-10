@@ -264,29 +264,17 @@ export function appendOffset(search: URLSearchParams, offset: number): void {
 }
 
 /**
- * Build the full read query string for a TanStack DB subset load: `select=*`
- * plus where filters, cursor filters, order, limit, and offset. Both the read
- * query fn and the query key derive from `LoadSubsetOptions`, so keeping this
- * the single translator prevents the key and the request URL from drifting.
+ * Encode the params that identify a cached subset — where filters, order, and
+ * limit. Deliberately excludes `select`, `cursor`, and `offset`: those are the
+ * per-page request details, not part of what distinguishes one subset from
+ * another. This is the shared core of the request URL and the query key, so the
+ * two cannot drift.
  */
-export function loadSubsetOptionsToSearch(
+export function subsetParamsToSearch(
   options: LoadSubsetOptions
 ): URLSearchParams {
-  const { where, orderBy, limit, offset, cursor } = options
-  const cursorFilters = cursor
-    ? [...extractSimpleComparisons(cursor.whereFrom)]
-    : []
-
-  const search = new URLSearchParams()
-  search.set("select", "*")
-  const filters = paramsToSearch([
-    ...toPostgrestParams(where, { mergeIn: true }),
-    ...cursorToPostgrestParams(cursorFilters),
-  ])
-  for (const [key, value] of filters) {
-    search.append(key, value)
-  }
-
+  const { where, orderBy, limit } = options
+  const search = paramsToSearch(toPostgrestParams(where, { mergeIn: true }))
   appendOrder(
     search,
     parseOrderByExpression(orderBy).map((sort) => ({
@@ -297,8 +285,34 @@ export function loadSubsetOptionsToSearch(
   if (limit) {
     appendLimit(search, limit)
   }
-  if (offset) {
-    appendOffset(search, offset)
+  return search
+}
+
+/**
+ * Build the full read query string for a TanStack DB subset load: the shared
+ * subset params ({@link subsetParamsToSearch}) plus `select=*`, cursor filters,
+ * and offset.
+ */
+export function loadSubsetOptionsToSearch(
+  options: LoadSubsetOptions
+): URLSearchParams {
+  const search = new URLSearchParams()
+  search.set("select", "*")
+  for (const [key, value] of subsetParamsToSearch(options)) {
+    search.append(key, value)
+  }
+
+  const cursorFilters = options.cursor
+    ? [...extractSimpleComparisons(options.cursor.whereFrom)]
+    : []
+  for (const [key, value] of paramsToSearch(
+    cursorToPostgrestParams(cursorFilters)
+  )) {
+    search.append(key, value)
+  }
+
+  if (options.offset) {
+    appendOffset(search, options.offset)
   }
   return search
 }
