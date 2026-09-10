@@ -1,7 +1,4 @@
-import type { PostgrestFilterBuilder } from "@supabase/postgrest-js"
-import type { SerializedExpression as Expression } from "./serialize"
-
-type SupabaseQuery = PostgrestFilterBuilder<any, any, any, any>
+import type { SerializedExpression as Expression } from "../serialize"
 
 type Comparison = { column: string; operator: string; value: string }
 export type PostgrestParam =
@@ -14,10 +11,49 @@ interface FilterOptions {
   stripAlias?: boolean
 }
 
+/** Set the comma-joined `order` param (independent of limit/offset). */
+export function appendOrder(
+  search: URLSearchParams,
+  sorts: Array<{ column: string; ascending: boolean }>
+): void {
+  if (sorts.length === 0) return
+  search.set(
+    "order",
+    sorts
+      .map((sort) => `${sort.column}.${sort.ascending ? "asc" : "desc"}`)
+      .join(",")
+  )
+}
+
+export function appendLimit(search: URLSearchParams, limit: number): void {
+  search.set("limit", `${limit}`)
+}
+
+export function appendOffset(search: URLSearchParams, offset: number): void {
+  search.set("offset", `${offset}`)
+}
+
+/** Render params as the `URLSearchParams` sent to (and keyed by) PostgREST. */
+export function paramsToSearch(params: PostgrestParam[]): URLSearchParams {
+  const search = new URLSearchParams()
+  for (const param of params) {
+    if (param.kind === "column")
+      search.append(param.column, `${param.operator}.${param.value}`)
+    else search.append("or", `(${param.filter})`)
+  }
+  return search
+}
+
+function flattenAnd(expr: Expression): Expression[] {
+  return expr.type === "func" && expr.name === "and"
+    ? expr.args.flatMap(flattenAnd)
+    : [expr]
+}
+
 // Only lists and logical groups parse quoted values. Top-level scalar values
 // must remain raw: col=eq."x" would match the quotes themselves.
 const NEEDS_QUOTES = /^$|^\s|\s$|[,()"\\]/
-const quoteValue = (value: unknown): string => {
+export const quoteValue = (value: unknown): string => {
   const raw = `${value}`
   return NEEDS_QUOTES.test(raw)
     ? `"${raw.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
@@ -114,12 +150,6 @@ function toFilterString(
     : null
 }
 
-function flattenAnd(expr: Expression): Expression[] {
-  return expr.type === "func" && expr.name === "and"
-    ? expr.args.flatMap(flattenAnd)
-    : [expr]
-}
-
 // Preserve the live adapter's union of duplicate IN demands. This deliberately
 // fetches a superset, which TanStack re-filters. Never do this inside OR/NOT or
 // for server aggregates, where client-side filtering cannot repair the result.
@@ -179,27 +209,4 @@ export function toPostgrestParams(
     }
     return []
   })
-}
-
-export function applyPostgrestParams(
-  query: SupabaseQuery,
-  params: PostgrestParam[]
-): SupabaseQuery {
-  for (const param of params) {
-    query =
-      param.kind === "column"
-        ? query.filter(param.column, param.operator, param.value)
-        : query.or(param.filter)
-  }
-  return query
-}
-
-export function paramsToKey(params: PostgrestParam[]): string {
-  const search = new URLSearchParams()
-  for (const param of params) {
-    if (param.kind === "column")
-      search.append(param.column, `${param.operator}.${param.value}`)
-    else search.append("or", `(${param.filter})`)
-  }
-  return search.toString()
 }

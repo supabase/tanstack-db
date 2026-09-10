@@ -1,91 +1,97 @@
-import { createClient } from "@supabase/supabase-js"
 import {
   and,
   eq,
   gt,
+  gte,
   IR,
   ilike,
   inArray,
   isNull,
   like,
+  lt,
+  lte,
   not,
   or,
   upper,
 } from "@tanstack/db"
-import { QueryClient } from "@tanstack/query-core"
 import { describe, expect, test } from "vitest"
-import { subsetOptionsToQueryKey, supabaseQueryFn } from "../src/functions"
-import { buildSupabaseQuery } from "../src/query-once"
-import { createMockFetch, SUPABASE_KEY, SUPABASE_URL } from "./test.utils"
+import { subsetOptionsToQueryKey } from "../src/functions"
+import {
+  keyColumnsToSearch,
+  loadSubsetOptionsToSearch,
+  queryIrToSearch,
+  subsetParamsToSearch,
+} from "../src/postgrest-filters"
 
-// Exercise the real request builders on both paths. queryOnce without an
-// aggregate delegates to TanStack and would only test the live path again.
-describe.each([
-  "live",
-  "server",
-] as const)("%s filter serialization", (path) => {
-  const ref = (column: string) =>
-    new IR.PropRef(path === "server" ? ["user", column] : [column])
-  const name = ref("name")
-  const id = ref("id")
-  const active = ref("active")
+// A bare (unaliased) column ref, as the live subset loader receives them.
+const col = (name: string) => new IR.PropRef([name])
+// An aliased ref (`user.column`), as the serialized query IR carries them;
+// queryIrToSearch strips the alias prefix.
+const userCol = (name: string) => new IR.PropRef(["user", name])
 
-  async function request(where: IR.BasicExpression<boolean>) {
-    const mockFetch = createMockFetch()
-    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-      global: { fetch: mockFetch },
-    })
-    if (path === "server") {
-      await buildSupabaseQuery(supabase, {
-        from: { type: "table", name: "users", alias: "user" },
-        where: [where],
-      })
-    } else {
-      await supabaseQueryFn(supabase, "users", {
-        client: new QueryClient(),
-        queryKey: ["users"],
-        signal: new AbortController().signal,
-        meta: { loadSubsetOptions: { where } },
-      })
-    }
-    return new URL(String(mockFetch.mock.calls[0][0])).searchParams
-  }
+const name = col("name")
+const id = col("id")
+const active = col("active")
 
-  test("preserves AND branches inside OR", async () => {
-    const params = await request(
-      or(and(eq(active, true), gt(id, 1)), eq(name, "Bob"))
-    )
-    expect(params.get("or")).toBe("(and(active.eq.true,id.gt.1),name.eq.Bob)")
+// A single orderBy clause, as LoadSubsetOptions carries them.
+const sort = (ref: IR.PropRef, direction: "asc" | "desc") => ({
+  expression: ref,
+  compareOptions: { direction, nulls: "last" as const },
+})
+
+// ── subsetParamsToSearch ────────────────────────────────────────────
+// Most tests here exercise the WHERE quoting/negation/IN/null/wildcard logic,
+// which lives in a single internal translator shared by every builder;
+// subsetParamsToSearch is its thinnest public wrapper.
+describe("subsetParamsToSearch", () => {
+  const filters = (where: IR.BasicExpression<boolean>) =>
+    subsetParamsToSearch({ where })
+
+  test.each([
+    [eq(id, 1), "eq.1"],
+    [gt(id, 1), "gt.1"],
+    [gte(id, 1), "gte.1"],
+    [lt(id, 1), "lt.1"],
+    [lte(id, 1), "lte.1"],
+    [isNull(id), "is.null"],
+    [inArray(id, [1, 2, 3]), "in.(1,2,3)"],
+  ])("renders comparison operators: %s", (where, expected) => {
+    expect(filters(where).get("id")).toBe(expected)
   })
 
-  test.each([and, or])("negates logical groups", async (logical) => {
-    const params = await request(
-      not(logical(eq(active, true), eq(name, "Bob")))
-    )
-    expect(params.get("or")).toBe(
+  test("leaves top-level scalar values raw (unquoted)", () => {
+    expect(filters(eq(name, "a,b(c)")).get("name")).toBe("eq.a,b(c)")
+  })
+
+  test("preserves AND branches inside OR", () => {
+    expect(
+      filters(or(and(eq(active, true), gt(id, 1)), eq(name, "Bob"))).get("or")
+    ).toBe("(and(active.eq.true,id.gt.1),name.eq.Bob)")
+  })
+
+  test.each([and, or])("negates logical groups", (logical) => {
+    expect(
+      filters(not(logical(eq(active, true), eq(name, "Bob")))).get("or")
+    ).toBe(
       logical === and
         ? "(active.not.eq.true,name.not.eq.Bob)"
         : "(and(active.not.eq.true,name.not.eq.Bob))"
     )
   })
 
-  test("supports double negation of comparisons and logical groups", async () => {
-    expect((await request(not(not(eq(name, "Alice"))))).get("name")).toBe(
-      "eq.Alice"
+  test("supports double negation of comparisons and logical groups", () => {
+    expect(filters(not(not(eq(name, "Alice")))).get("name")).toBe("eq.Alice")
+    expect(filters(not(not(or(eq(name, "Alice"), eq(id, 2))))).get("or")).toBe(
+      "(name.eq.Alice,id.eq.2)"
     )
-    expect(
-      (await request(not(not(or(eq(name, "Alice"), eq(id, 2)))))).get("or")
-    ).toBe("(name.eq.Alice,id.eq.2)")
   })
 
-  test("preserves multiple OR parameters under AND", async () => {
-    const params = await request(
-      and(or(eq(id, 1), eq(id, 2)), or(eq(name, "Alice"), eq(name, "Bob")))
-    )
-    expect(params.getAll("or")).toEqual([
-      "(id.eq.1,id.eq.2)",
-      "(name.eq.Alice,name.eq.Bob)",
-    ])
+  test("preserves multiple OR parameters under AND", () => {
+    expect(
+      filters(
+        and(or(eq(id, 1), eq(id, 2)), or(eq(name, "Alice"), eq(name, "Bob")))
+      ).getAll("or")
+    ).toEqual(["(id.eq.1,id.eq.2)", "(name.eq.Alice,name.eq.Bob)"])
   })
 
   test.each([
@@ -94,82 +100,62 @@ describe.each([
     ["a,b(c)", '"a,b(c)"'],
     ['a"b\\c', '"a\\"b\\\\c"'],
     ["a.b:c&d=1+%", "a.b:c&d=1+%"],
-  ])("quotes logical values and IN members: %j", async (value, quoted) => {
-    expect((await request(or(eq(name, value), eq(id, 2)))).get("or")).toBe(
+  ])("quotes logical values and IN members: %j", (value, quoted) => {
+    expect(filters(or(eq(name, value), eq(id, 2))).get("or")).toBe(
       `(name.eq.${quoted},id.eq.2)`
     )
-    expect((await request(inArray(name, [value, value]))).get("name")).toBe(
+    expect(filters(inArray(name, [value, value])).get("name")).toBe(
       value === "" ? "eq." : `in.(${quoted})`
     )
-    expect((await request(not(inArray(name, [value])))).get("name")).toBe(
+    expect(filters(not(inArray(name, [value]))).get("name")).toBe(
       value === "" ? "not.eq." : `not.in.(${quoted})`
     )
-    expect((await request(eq(name, value))).get("name")).toBe(`eq.${value}`)
-    expect((await request(not(eq(name, value)))).get("name")).toBe(
-      `not.eq.${value}`
-    )
   })
 
-  test("renders negated comparisons inside OR", async () => {
-    const params = await request(
-      or(not(isNull(name)), not(inArray(name, ["a,b", "c"])))
-    )
-    expect(params.get("or")).toBe('(name.not.is.null,name.not.in.("a,b",c))')
+  test("renders negated comparisons inside OR", () => {
+    expect(
+      filters(or(not(isNull(name)), not(inArray(name, ["a,b", "c"])))).get("or")
+    ).toBe('(name.not.is.null,name.not.in.("a,b",c))')
   })
 
-  test("does not union IN constraints inside logical groups", async () => {
-    const params = await request(
-      or(and(inArray(id, [1, 2]), inArray(id, [2, 3])), eq(active, true))
-    )
-    expect(params.get("or")).toBe(
-      "(and(id.in.(1,2),id.in.(2,3)),active.eq.true)"
-    )
+  test("does not union IN constraints inside logical groups", () => {
+    expect(
+      filters(
+        or(and(inArray(id, [1, 2]), inArray(id, [2, 3])), eq(active, true))
+      ).get("or")
+    ).toBe("(and(id.in.(1,2),id.in.(2,3)),active.eq.true)")
   })
 
-  test("merges top-level IN demands only for live queries without mutating IR", async () => {
-    const where = and(
-      inArray(id, [1, 2]),
-      and(inArray(id, [2, 3]), eq(active, true))
-    )
-    const before = JSON.stringify(where)
-    expect((await request(where)).getAll("id")).toEqual(
-      path === "live" ? ["in.(1,2,3)"] : ["in.(1,2)", "in.(2,3)"]
-    )
-    expect(JSON.stringify(where)).toBe(before)
+  test("renders empty IN lists with SQL null semantics", () => {
+    expect(filters(inArray(id, [])).get("id")).toBe("in.()")
+    expect(filters(not(inArray(id, []))).get("id")).toBe("not.is.null")
+    expect(filters(not(not(inArray(id, [])))).get("id")).toBe("in.()")
   })
 
-  test("renders empty IN lists with SQL null semantics", async () => {
-    expect((await request(inArray(id, []))).get("id")).toBe("in.()")
-    expect((await request(not(inArray(id, [])))).get("id")).toBe("not.is.null")
-    expect((await request(not(not(inArray(id, []))))).get("id")).toBe("in.()")
+  test("preserves null guards for empty IN inside a negated logical group", () => {
+    expect(
+      filters(not(and(inArray(name, []), eq(active, true)))).get("or")
+    ).toBe("(name.not.is.null,active.not.eq.true)")
   })
 
-  test("preserves null guards for empty IN inside a negated logical group", async () => {
-    const params = await request(not(and(inArray(name, []), eq(active, true))))
-    expect(params.get("or")).toBe("(name.not.is.null,active.not.eq.true)")
-  })
-
-  test("ignores null list members instead of matching literal null strings", async () => {
-    expect((await request(inArray(name, ["Alice", null]))).get("name")).toBe(
+  test("ignores null list members instead of matching literal null strings", () => {
+    expect(filters(inArray(name, ["Alice", null])).get("name")).toBe(
       "in.(Alice)"
     )
-    expect(
-      (await request(not(inArray(name, ["Alice", null])))).get("name")
-    ).toBe("not.in.(Alice)")
-    expect((await request(not(inArray(name, [null])))).get("name")).toBe(
-      "not.is.null"
+    expect(filters(not(inArray(name, ["Alice", null]))).get("name")).toBe(
+      "not.in.(Alice)"
     )
+    expect(filters(not(inArray(name, [null]))).get("name")).toBe("not.is.null")
   })
 
   test.each([
     like,
     ilike,
-  ])("preserves SQL wildcards and literal backslashes", async (match) => {
-    expect((await request(match(name, "A_%"))).get("name")).toBe(
-      `${match === like ? "like" : "ilike"}.A_%`
-    )
-    expect((await request(not(match(name, "a\\%")))).get("name")).toBe(
-      `not.${match === like ? "like" : "ilike"}.a\\\\%`
+  ])("preserves SQL wildcards and literal backslashes", (match) => {
+    const op = match === like ? "like" : "ilike"
+    expect(filters(match(name, "A_%")).get("name")).toBe(`${op}.A_%`)
+    expect(filters(not(match(name, "a\\%"))).get("name")).toBe(
+      `not.${op}.a\\\\%`
     )
   })
 
@@ -178,24 +164,242 @@ describe.each([
     ["computed NOT AND", not(and(eq(active, true), eq(upper(name), "ALICE")))],
     ["literal asterisk", like(name, "*Ali*")],
     ["negated literal asterisk", not(ilike(name, "*Ali*"))],
-  ])("handles unsupported %s without narrowing results", async (_, where) => {
-    if (path === "server") {
-      await expect(request(where)).rejects.toThrow("fully pushable filters")
-    } else {
-      const params = await request(and(gt(id, 0), where))
-      expect([...params]).toEqual([
-        ["select", "*"],
-        ["id", "gt.0"],
-      ])
-    }
+  ])("drops unpushable %s, keeping the rest", (_, where) => {
+    expect([...filters(and(gt(id, 0), where))]).toEqual([["id", "gt.0"]])
+  })
+
+  test("appends a single order direction", () => {
+    expect(
+      subsetParamsToSearch({ orderBy: [sort(id, "asc")] }).get("order")
+    ).toBe("id.asc")
+    expect(
+      subsetParamsToSearch({ orderBy: [sort(id, "desc")] }).get("order")
+    ).toBe("id.desc")
+  })
+
+  test("merges multiple order columns into one comma-joined value", () => {
+    const search = subsetParamsToSearch({
+      orderBy: [sort(id, "asc"), sort(name, "desc")],
+    })
+    expect(search.get("order")).toBe("id.asc,name.desc")
+    expect(search.getAll("order")).toHaveLength(1)
+  })
+
+  test("appends limit", () => {
+    expect(subsetParamsToSearch({ limit: 10 }).get("limit")).toBe("10")
+  })
+
+  test("merges duplicate top-level IN demands without mutating the input", () => {
+    const where = and(inArray(id, [1, 2]), inArray(id, [2, 3]))
+    const before = JSON.stringify(where)
+    expect(subsetParamsToSearch({ where }).getAll("id")).toEqual(["in.(1,2,3)"])
+    expect(JSON.stringify(where)).toBe(before)
+  })
+
+  test("excludes select, offset, and cursor (pagination/request details)", () => {
+    const search = subsetParamsToSearch({
+      where: eq(id, 1),
+      limit: 5,
+      offset: 99,
+      cursor: { whereFrom: gt(id, 1), whereCurrent: eq(id, 1) },
+    })
+    expect(search.get("id")).toBe("eq.1")
+    expect(search.get("limit")).toBe("5")
+    expect(search.has("select")).toBe(false)
+    expect(search.has("offset")).toBe(false)
+    // The cursor's `gt(id, 1)` must not leak in as an id filter.
+    expect(search.getAll("id")).toEqual(["eq.1"])
   })
 })
 
-describe("filter cache keys", () => {
-  const name = new IR.PropRef<string>(["name"])
-  const active = new IR.PropRef<boolean>(["active"])
+// ── loadSubsetOptionsToSearch ───────────────────────────────────────
+describe("loadSubsetOptionsToSearch", () => {
+  test("always requests all columns", () => {
+    expect(loadSubsetOptionsToSearch({}).get("select")).toBe("*")
+  })
+
+  test("empty options produce only select=*", () => {
+    expect([...loadSubsetOptionsToSearch({})]).toEqual([["select", "*"]])
+  })
+
+  test("includes where, order and limit from the subset params", () => {
+    const search = loadSubsetOptionsToSearch({
+      where: eq(id, 1),
+      orderBy: [sort(id, "asc")],
+      limit: 5,
+    })
+    expect(search.get("id")).toBe("eq.1")
+    expect(search.get("order")).toBe("id.asc")
+    expect(search.get("limit")).toBe("5")
+  })
+
+  test("appends offset independently of limit", () => {
+    const search = loadSubsetOptionsToSearch({ offset: 20 })
+    expect(search.get("offset")).toBe("20")
+    expect(search.has("limit")).toBe(false)
+  })
+
+  test("appends cursor filters: quotes IN members, leaves scalars raw", () => {
+    const search = loadSubsetOptionsToSearch({
+      cursor: {
+        whereFrom: and(inArray(name, ["a,b", "c"]), gt(id, 5)),
+        whereCurrent: eq(id, 5),
+      },
+    })
+    expect(search.get("name")).toBe('in.("a,b",c)')
+    expect(search.get("id")).toBe("gt.5")
+  })
+})
+
+// ── keyColumnsToSearch ──────────────────────────────────────────────
+describe("keyColumnsToSearch", () => {
+  test("builds an eq filter for a single key column", () => {
+    expect(keyColumnsToSearch(["id"], { id: 1, name: "x" }).get("id")).toBe(
+      "eq.1"
+    )
+  })
+
+  test("builds one eq filter per composite key, preserving order", () => {
+    const search = keyColumnsToSearch(["user_id", "todo_id"], {
+      user_id: 1,
+      todo_id: 2,
+      title: "ignored",
+    })
+    expect(search.get("user_id")).toBe("eq.1")
+    expect(search.get("todo_id")).toBe("eq.2")
+    expect([...search.keys()]).toEqual(["user_id", "todo_id"])
+  })
+})
+
+// ── queryIrToSearch ─────────────────────────────────────────────────
+// Filter rendering is covered above; these cover queryIrToSearch's own
+// concerns. Select/join/aggregate building is covered in query-once.test.ts.
+describe("queryIrToSearch", () => {
+  const table = { type: "table", name: "users", alias: "user" } as const
+  const build = (ir: Parameters<typeof queryIrToSearch>[0]) =>
+    queryIrToSearch(ir)
+
+  test("resolves the base table name", () => {
+    expect(build({ from: table }).tableName).toBe("users")
+  })
+
+  test("builds an explicit select list and renames columns", () => {
+    expect(
+      build({
+        from: table,
+        select: {
+          id: { type: "ref", path: ["user", "id"] },
+          alias: { type: "ref", path: ["user", "name"] },
+        },
+      }).search.get("select")
+    ).toBe("id,alias:name")
+  })
+
+  test("falls back to select=* for non-pushable select expressions", () => {
+    expect(
+      build({
+        from: table,
+        select: {
+          upper: {
+            type: "func",
+            name: "upper",
+            args: [{ type: "ref", path: ["user", "name"] }],
+          },
+        },
+      }).search.get("select")
+    ).toBe("*")
+  })
+
+  test("pushes where filters, stripping the table alias", () => {
+    expect(
+      build({ from: table, where: [eq(userCol("active"), true)] }).search.get(
+        "active"
+      )
+    ).toBe("eq.true")
+  })
+
+  test.each([
+    [
+      "computed OR",
+      or(eq(userCol("active"), true), eq(upper(userCol("name")), "A")),
+    ],
+    ["literal asterisk", like(userCol("name"), "*Ali*")],
+  ])("throws on non-pushable %s (strict)", (_, where) => {
+    expect(() => build({ from: table, where: [where] })).toThrow(
+      "fully pushable filters"
+    )
+  })
+
+  test("does not merge duplicate IN demands", () => {
+    expect(
+      build({
+        from: table,
+        where: [inArray(userCol("id"), [1, 2]), inArray(userCol("id"), [2, 3])],
+      }).search.getAll("id")
+    ).toEqual(["in.(1,2)", "in.(2,3)"])
+  })
+
+  test("orders by real columns and skips computed/$selected refs", () => {
+    const search = build({
+      from: table,
+      orderBy: [
+        {
+          expression: { type: "ref", path: ["user", "id"] },
+          direction: "asc",
+          nulls: "last",
+        },
+        {
+          expression: { type: "ref", path: ["$selected", "score"] },
+          direction: "desc",
+          nulls: "last",
+        },
+        {
+          expression: { type: "ref", path: ["user", "name"] },
+          direction: "desc",
+          nulls: "last",
+        },
+      ],
+    }).search
+    expect(search.get("order")).toBe("id.asc,name.desc")
+  })
+
+  test("emits offset independently of limit", () => {
+    const search = build({ from: table, offset: 20 }).search
+    expect(search.get("offset")).toBe("20")
+    expect(search.has("limit")).toBe(false)
+  })
+
+  test("pushes a subquery FROM's where down and resolves the base table", () => {
+    const { tableName, search } = build({
+      from: {
+        type: "subquery",
+        alias: "activeUser",
+        query: { from: table, where: [eq(userCol("active"), true)] },
+      },
+    })
+    expect(tableName).toBe("users")
+    expect(search.get("active")).toBe("eq.true")
+  })
+
+  test("skips residual (client-side) where clauses", () => {
+    const search = build({
+      from: table,
+      where: [{ expression: eq(userCol("id"), 1), residual: true }],
+    }).search
+    expect(search.has("id")).toBe(false)
+  })
+})
+
+// ── subsetOptionsToQueryKey ─────────────────────────────────────────
+describe("subsetOptionsToQueryKey", () => {
   const key = (where: IR.BasicExpression<boolean>) =>
     subsetOptionsToQueryKey("users", { where })
+
+  test("collapses to [tableName] when nothing is pushable", () => {
+    expect(key(or(eq(name, "Alice"), eq(upper(name), "BOB")))).toEqual([
+      "users",
+    ])
+  })
 
   test("literal query delimiters cannot collide with extra filters", () => {
     expect(key(eq(name, "Alice&active=eq.true"))).not.toEqual(
@@ -213,12 +417,9 @@ describe("filter cache keys", () => {
     )
   })
 
-  test("uses the merged IN request and omits unpushable OR groups", () => {
+  test("uses the merged IN request", () => {
     expect(
       key(and(inArray(name, ["a", "b"]), inArray(name, ["b", "c"])))
     ).toEqual(key(inArray(name, ["a", "b", "c"])))
-    expect(key(or(eq(name, "Alice"), eq(upper(name), "BOB")))).toEqual([
-      "users",
-    ])
   })
 })

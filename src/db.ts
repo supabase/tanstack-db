@@ -1,6 +1,5 @@
-/* biome-ignore-all lint/suspicious/noExplicitAny: PostgrestFilterBuilder requires database schema types which are not available without codegen */
+/* biome-ignore-all lint/suspicious/noExplicitAny: collection items are typed by the caller's schema, not statically known here */
 import type { StandardSchemaV1 } from "@standard-schema/spec"
-import type { PostgrestFilterBuilder } from "@supabase/postgrest-js"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { BasicIndex, type Collection } from "@tanstack/db"
 import type { QueryClient } from "@tanstack/query-core"
@@ -13,8 +12,6 @@ import {
   supabaseQueryFn,
 } from "./functions"
 import { getQueryClient } from "./query-client"
-
-type GenericPostgrestFilterBuilder = PostgrestFilterBuilder<any, any, any, any>
 
 interface SupabaseCollectionOptions<TSchema extends StandardSchemaV1> {
   /**
@@ -116,18 +113,8 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
     return keys.map((key) => item[key]).join("-")
   }
 
-  // Build the where clause for update and delete operations by matching every
-  // configured key column against the item's values.
-  const where = (
-    query: GenericPostgrestFilterBuilder,
-    item: TItem
-  ): GenericPostgrestFilterBuilder => {
-    let scopedQuery = query
-    for (const key of keys) {
-      scopedQuery = scopedQuery.eq(key as string, item[key])
-    }
-    return scopedQuery
-  }
+  // Key columns used to match rows on update and delete.
+  const keyColumns = keys as string[]
 
   let entry: TableEntry | null = null
   if (realtime) {
@@ -142,8 +129,8 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
     syncMode: "on-demand",
     queryFn: (ctx) => supabaseQueryFn(supabase, tableName, ctx),
     onInsert: (ctx) => supabaseOnInsert(supabase, tableName, ctx),
-    onUpdate: (ctx) => supabaseOnUpdate(supabase, tableName, where, ctx),
-    onDelete: (ctx) => supabaseOnDelete(supabase, tableName, where, ctx),
+    onUpdate: (ctx) => supabaseOnUpdate(supabase, tableName, keyColumns, ctx),
+    onDelete: (ctx) => supabaseOnDelete(supabase, tableName, keyColumns, ctx),
     autoIndex: "eager",
     defaultIndexType: BasicIndex,
   })
