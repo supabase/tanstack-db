@@ -15,7 +15,7 @@ import {
 import { QueryClient } from "@tanstack/query-core"
 import { describe, expect, test } from "vitest"
 import { subsetOptionsToQueryKey, supabaseQueryFn } from "../src/functions"
-import { buildSupabaseQuery } from "../src/query-once"
+import { executeQuery } from "../src/query-once"
 import { createMockFetch, SUPABASE_KEY, SUPABASE_URL } from "./test.utils"
 
 // Exercise the real request builders on both paths. queryOnce without an
@@ -36,7 +36,7 @@ describe.each([
       global: { fetch: mockFetch },
     })
     if (path === "server") {
-      await buildSupabaseQuery(supabase, {
+      await executeQuery(supabase, {
         from: { type: "table", name: "users", alias: "user" },
         where: [where],
       })

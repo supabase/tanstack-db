@@ -1,4 +1,3 @@
-import type { PostgrestFilterBuilder } from "@supabase/postgrest-js"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import {
   type DeleteMutationFnParams,
@@ -11,47 +10,16 @@ import {
 } from "@tanstack/db"
 import type { QueryClient, QueryMeta } from "@tanstack/query-core"
 import {
-  applyPostgrestParams,
+  appendLimit,
+  appendOffset,
+  appendOrder,
+  cursorToPostgrestParams,
+  type PostgrestParam,
   paramsToKey,
+  paramsToSearch,
   toPostgrestParams,
 } from "./postgrest-filters"
-import { CLIENT_INFO, CLIENT_INFO_HEADER } from "./request-headers"
-
-type GenericPostgrestFilterBuilder = PostgrestFilterBuilder<any, any, any, any>
-
-/** Cursor filters arrive pre-flattened as `SimpleComparison`, not as IR. */
-const buildQuery = (
-  baseQuery: GenericPostgrestFilterBuilder,
-  filter: SimpleComparison
-): GenericPostgrestFilterBuilder => {
-  const field = filter.field.join(".")
-  if (filter.operator === "eq") {
-    return baseQuery.eq(field, filter.value)
-  }
-  if (filter.operator === "gt") {
-    return baseQuery.gt(field, filter.value)
-  }
-  if (filter.operator === "gte") {
-    return baseQuery.gte(field, filter.value)
-  }
-  if (filter.operator === "lt") {
-    return baseQuery.lt(field, filter.value)
-  }
-  if (filter.operator === "lte") {
-    return baseQuery.lte(field, filter.value)
-  }
-  if (filter.operator === "in") {
-    return baseQuery.in(field, filter.value)
-  }
-  if (filter.operator === "isNull") {
-    return baseQuery.is(field, null)
-  }
-  if (filter.operator === "not_eq") {
-    return baseQuery.not(field, "eq", filter.value)
-  }
-  console.warn(`buildQuery: unsupported operator: ${filter.operator}`)
-  return baseQuery
-}
+import { postgrestRequest } from "./postgrest-request"
 
 export const subsetOptionsToQueryKey = (
   tableName: string,
@@ -103,39 +71,39 @@ export const supabaseQueryFn = async (
   }
   const sorts = parseOrderByExpression(orderBy)
 
-  let baseQuery: GenericPostgrestFilterBuilder = supabase
-    .from(tableName)
-    .select("*")
-    .setHeader(CLIENT_INFO_HEADER, CLIENT_INFO)
-
-  if (limit) {
-    baseQuery = baseQuery.limit(limit)
+  const params: PostgrestParam[] = [
+    ...toPostgrestParams(where, { mergeIn: true }),
+    ...cursorToPostgrestParams(cursorFilters),
+  ]
+  const search = new URLSearchParams()
+  search.set("select", "*")
+  for (const [key, value] of paramsToSearch(params)) {
+    search.append(key, value)
   }
 
-  if (offset) {
-    baseQuery = baseQuery.range(offset, offset + 5)
-  }
-  for (const sort of sorts) {
-    baseQuery = baseQuery.order(sort.field.join("."), {
+  appendOrder(
+    search,
+    sorts.map((sort) => ({
+      column: sort.field.join("."),
       ascending: sort.direction === "asc",
-    })
-  }
-
-  baseQuery = applyPostgrestParams(
-    baseQuery,
-    toPostgrestParams(where, { mergeIn: true })
+    }))
   )
-  for (const filter of cursorFilters) {
-    baseQuery = buildQuery(baseQuery, filter)
+  if (limit) {
+    appendLimit(search, limit)
+  }
+  if (offset) {
+    appendOffset(search, offset)
   }
 
-  const { data, error } = await baseQuery
-
-  if (error) {
-    throw error
-  }
+  const data = await postgrestRequest(supabase, tableName, {
+    method: "GET",
+    search,
+  })
   return data || []
 }
+
+/** Build the `key.eq.value` params matching a row for update/delete. */
+export type KeyParams = (item: any) => PostgrestParam[]
 
 export const supabaseOnInsert = async (
   supabase: SupabaseClient,
@@ -144,18 +112,16 @@ export const supabaseOnInsert = async (
 ) => {
   await Promise.all(
     transaction.mutations.map(async (mutation) => {
-      const { data, error } = await supabase
-        .from(tableName)
-        .insert({
-          ...mutation.modified,
-        })
-        .setHeader(CLIENT_INFO_HEADER, CLIENT_INFO)
-        .select()
-        .single()
+      const search = new URLSearchParams()
+      search.set("select", "*")
+      const data = await postgrestRequest(supabase, tableName, {
+        method: "POST",
+        search,
+        body: { ...mutation.modified },
+        returnRows: true,
+        single: true,
+      })
 
-      if (error) {
-        throw error
-      }
       mutation.modified = data
       // The data has been inserted and confirmed by the server, so we can write it to the collection
       collection.utils.writeInsert(data)
@@ -168,31 +134,22 @@ export const supabaseOnInsert = async (
 export const supabaseOnUpdate = async (
   supabase: SupabaseClient,
   tableName: string,
-  filter: (
-    query: PostgrestFilterBuilder<any, any, any, any, any, any, any>,
-    item: any
-  ) => PostgrestFilterBuilder<any, any, any, any, any, any, any>,
+  keyParams: KeyParams,
   { transaction, collection }: UpdateMutationFnParams<any, any, any>
 ) => {
   await Promise.all(
     transaction.mutations.map(async (mutation) => {
       const { original, changes } = mutation
-      const { error, data } = await filter(
-        supabase
-          .from(tableName)
-          .update({
-            ...original,
-            ...changes,
-          })
-          .setHeader(CLIENT_INFO_HEADER, CLIENT_INFO),
-        mutation.original
-      )
-        .select()
-        .single()
+      const search = paramsToSearch(keyParams(original))
+      search.set("select", "*")
+      const data = await postgrestRequest(supabase, tableName, {
+        method: "PATCH",
+        search,
+        body: { ...original, ...changes },
+        returnRows: true,
+        single: true,
+      })
 
-      if (error) {
-        throw error
-      }
       mutation.modified = data
       collection.utils.writeUpdate(data)
     })
@@ -204,25 +161,16 @@ export const supabaseOnUpdate = async (
 export const supabaseOnDelete = async (
   supabase: SupabaseClient,
   tableName: string,
-  filter: (
-    query: PostgrestFilterBuilder<any, any, any, any>,
-    item: any
-  ) => PostgrestFilterBuilder<any, any, any, any>,
+  keyParams: KeyParams,
   { transaction, collection }: DeleteMutationFnParams<any, any, any>
 ) => {
   await Promise.all(
     transaction.mutations.map(async (mutation) => {
-      const { error } = await filter(
-        supabase
-          .from(tableName)
-          .delete()
-          .setHeader(CLIENT_INFO_HEADER, CLIENT_INFO),
-        mutation.original
-      )
+      await postgrestRequest(supabase, tableName, {
+        method: "DELETE",
+        search: paramsToSearch(keyParams(mutation.original)),
+      })
 
-      if (error) {
-        throw error
-      }
       // The data has been deleted and confirmed by the server, so we can write it to the collection
       collection.utils.writeDelete(collection.getKeyFromItem(mutation.original))
     })

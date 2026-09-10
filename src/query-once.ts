@@ -1,4 +1,3 @@
-import type { PostgrestFilterBuilder } from "@supabase/postgrest-js"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import {
   type BaseQueryBuilder,
@@ -9,8 +8,14 @@ import {
   type QueryBuilder,
   queryOnce as queryOnceBase,
 } from "@tanstack/db"
-import { applyPostgrestParams, toPostgrestParams } from "./postgrest-filters"
-import { CLIENT_INFO, CLIENT_INFO_HEADER } from "./request-headers"
+import {
+  appendLimit,
+  appendOffset,
+  appendOrder,
+  paramsToSearch,
+  toPostgrestParams,
+} from "./postgrest-filters"
+import { postgrestRequest } from "./postgrest-request"
 import {
   type SerializedExpression,
   type SerializedFrom,
@@ -20,8 +25,6 @@ import {
   type SerializedWhere,
   serializeQueryIR,
 } from "./serialize"
-
-type SupabaseQuery = PostgrestFilterBuilder<any, any, any, any, any, any, any>
 
 // ── Expression helpers ──────────────────────────────────────────────
 
@@ -118,7 +121,23 @@ function buildSelectString(ir: SerializedQueryIR): string {
     parts.push(...embedStrings)
   }
 
-  return parts.join(", ")
+  return stripSelectWhitespace(parts.join(", "))
+}
+
+/**
+ * Remove whitespace outside of quoted segments, mirroring postgrest-js's
+ * `.select()`. We build the select with `", "` separators for readability but
+ * PostgREST expects a compact list.
+ */
+function stripSelectWhitespace(select: string): string {
+  let quoted = false
+  let result = ""
+  for (const char of select) {
+    if (/\s/.test(char) && !quoted) continue
+    if (char === '"') quoted = !quoted
+    result += char
+  }
+  return result
 }
 
 /**
@@ -324,46 +343,45 @@ function renderEmbedNode(node: EmbedNode): string {
 export function buildSupabaseQuery(
   supabase: SupabaseClient,
   ir: SerializedQueryIR
-): SupabaseQuery {
+): { tableName: string; search: URLSearchParams } {
   const { tableName, wheres: subqueryWheres } = resolveFrom(ir.from)
   const allWheres = [...subqueryWheres, ...(ir.where ?? [])]
 
-  const selectString = buildSelectString(ir)
-  let query: SupabaseQuery = supabase
-    .from(tableName)
-    .select(selectString)
-    .setHeader(CLIENT_INFO_HEADER, CLIENT_INFO)
+  const search = new URLSearchParams()
+  search.set("select", buildSelectString(ir))
 
   // Apply pushable where filters (skip residual / client-side filters)
   for (const w of allWheres) {
     if (isResidual(w)) continue
-    query = applyPostgrestParams(
-      query,
+    const filters = paramsToSearch(
       toPostgrestParams(getExpression(w), { stripAlias: true, strict: true })
     )
+    for (const [key, value] of filters) {
+      search.append(key, value)
+    }
   }
 
   // Apply order by (only real column refs, skip computed/$selected refs)
+  const sorts: Array<{ column: string; ascending: boolean }> = []
   for (const ob of ir.orderBy ?? []) {
     if (ob.expression.type === "ref" && !isComputedRef(ob.expression)) {
-      query = query.order(refToColumn(ob.expression), {
+      sorts.push({
+        column: refToColumn(ob.expression),
         ascending: ob.direction === "asc",
       })
     }
   }
+  appendOrder(search, sorts)
 
-  // Apply limit
+  // limit and offset are independent params — no derived range
   if (ir.limit !== undefined) {
-    query = query.limit(ir.limit)
+    appendLimit(search, ir.limit)
   }
-
-  // Apply offset via range
   if (ir.offset !== undefined) {
-    const end = ir.offset + (ir.limit ?? 1000) - 1
-    query = query.range(ir.offset, end)
+    appendOffset(search, ir.offset)
   }
 
-  return query
+  return { tableName, search }
 }
 
 // ── Execution ───────────────────────────────────────────────────────
@@ -378,8 +396,11 @@ export async function executeQuery(
   supabase: SupabaseClient,
   ir: SerializedQueryIR
 ): Promise<unknown[]> {
-  const { data, error } = await buildSupabaseQuery(supabase, ir)
-  if (error) throw error
+  const { tableName, search } = buildSupabaseQuery(supabase, ir)
+  const data = await postgrestRequest(supabase, tableName, {
+    method: "GET",
+    search,
+  })
   return data ?? []
 }
 

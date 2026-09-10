@@ -1,7 +1,5 @@
-import type { PostgrestFilterBuilder } from "@supabase/postgrest-js"
+import type { SimpleComparison } from "@tanstack/db"
 import type { SerializedExpression as Expression } from "./serialize"
-
-type SupabaseQuery = PostgrestFilterBuilder<any, any, any, any>
 
 type Comparison = { column: string; operator: string; value: string }
 export type PostgrestParam =
@@ -181,25 +179,81 @@ export function toPostgrestParams(
   })
 }
 
-export function applyPostgrestParams(
-  query: SupabaseQuery,
-  params: PostgrestParam[]
-): SupabaseQuery {
-  for (const param of params) {
-    query =
-      param.kind === "column"
-        ? query.filter(param.column, param.operator, param.value)
-        : query.or(param.filter)
-  }
-  return query
-}
-
-export function paramsToKey(params: PostgrestParam[]): string {
+/** Render params as the `URLSearchParams` sent to (and keyed by) PostgREST. */
+export function paramsToSearch(params: PostgrestParam[]): URLSearchParams {
   const search = new URLSearchParams()
   for (const param of params) {
     if (param.kind === "column")
       search.append(param.column, `${param.operator}.${param.value}`)
     else search.append("or", `(${param.filter})`)
   }
-  return search.toString()
+  return search
+}
+
+export function paramsToKey(params: PostgrestParam[]): string {
+  return paramsToSearch(params).toString()
+}
+
+// Cursor operators arrive pre-flattened as `SimpleComparison`. Scalar values
+// are emitted raw (top-level params must not be quoted); only IN members quote.
+const CURSOR_SCALAR_OPERATORS: Record<string, string> = {
+  eq: "eq",
+  gt: "gt",
+  gte: "gte",
+  lt: "lt",
+  lte: "lte",
+  not_eq: "not.eq",
+}
+
+/** Convert pre-flattened cursor comparisons to PostgREST params. */
+export function cursorToPostgrestParams(
+  filters: SimpleComparison[]
+): PostgrestParam[] {
+  return filters.flatMap((filter): PostgrestParam[] => {
+    const column = filter.field.join(".")
+    if (filter.operator === "in") {
+      const values = Array.isArray(filter.value) ? filter.value : []
+      return [
+        {
+          kind: "column",
+          column,
+          operator: "in",
+          value: `(${values.map(quoteValue).join(",")})`,
+        },
+      ]
+    }
+    if (filter.operator === "isNull") {
+      return [{ kind: "column", column, operator: "is", value: "null" }]
+    }
+    const operator = CURSOR_SCALAR_OPERATORS[filter.operator]
+    if (!operator) {
+      console.warn(
+        `cursorToPostgrestParams: unsupported operator: ${filter.operator}`
+      )
+      return []
+    }
+    return [{ kind: "column", column, operator, value: `${filter.value}` }]
+  })
+}
+
+/** Set the comma-joined `order` param (independent of limit/offset). */
+export function appendOrder(
+  search: URLSearchParams,
+  sorts: Array<{ column: string; ascending: boolean }>
+): void {
+  if (sorts.length === 0) return
+  search.set(
+    "order",
+    sorts
+      .map((sort) => `${sort.column}.${sort.ascending ? "asc" : "desc"}`)
+      .join(",")
+  )
+}
+
+export function appendLimit(search: URLSearchParams, limit: number): void {
+  search.set("limit", `${limit}`)
+}
+
+export function appendOffset(search: URLSearchParams, offset: number): void {
+  search.set("offset", `${offset}`)
 }
