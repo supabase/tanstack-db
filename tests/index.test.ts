@@ -190,6 +190,24 @@ describe("PostgREST query generation", () => {
       ])
     })
 
+    test("Date values inside an IN filter are sent as ISO 8601", async () => {
+      await queryResult((q) =>
+        q
+          .from({ user: usersCollection })
+          .where(({ user }) =>
+            inArray(user.name, [
+              new Date("2026-01-02T03:04:05.000Z"),
+              new Date("2026-02-03T04:05:06.000Z"),
+            ] as never)
+          )
+      )
+      // Each list member goes through quoteValue, which must also render Dates
+      // as ISO 8601 rather than the locale string from `Date.toString()`.
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&name=in.(2026-01-02T03:04:05.000Z,2026-02-03T04:05:06.000Z)",
+      ])
+    })
+
     test("WHERE name IS NULL", async () => {
       await queryResult((q) =>
         q.from({ user: usersCollection }).where(({ user }) => isNull(user.name))

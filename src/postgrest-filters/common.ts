@@ -50,11 +50,18 @@ function flattenAnd(expr: Expression): Expression[] {
     : [expr]
 }
 
+// PostgREST interpolates filter values into the URL as-is, and
+// `Date.prototype.toString()` produces something Postgres cannot cast to a
+// timestamp. Rendering it as ISO 8601 keeps the server query in agreement with
+// the Realtime subscription, which serializes Dates the same way.
+export const toScalarString = (value: unknown): string =>
+  value instanceof Date ? value.toISOString() : `${value}`
+
 // Only lists and logical groups parse quoted values. Top-level scalar values
 // must remain raw: col=eq."x" would match the quotes themselves.
 const NEEDS_QUOTES = /^$|^\s|\s$|[,()"\\]/
 export const quoteValue = (value: unknown): string => {
-  const raw = `${value}`
+  const raw = toScalarString(value)
   return NEEDS_QUOTES.test(raw)
     ? `"${raw.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
     : raw
@@ -117,7 +124,7 @@ function renderComparison(
   return {
     column,
     operator: expr.name,
-    value: quoteScalars ? quoteValue(value) : `${value}`,
+    value: quoteScalars ? quoteValue(value) : toScalarString(value),
   }
 }
 
