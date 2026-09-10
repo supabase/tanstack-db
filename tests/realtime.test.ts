@@ -63,11 +63,16 @@ function startLiveQuery(
 // Runs a live query against a fresh realtime users collection and waits for the
 // realtime channel to be attached, then returns the recording mock channel.
 async function captureChannel(
-  buildQuery: (collection: RealtimeCollection) => QueryFn
+  buildQuery: (collection: RealtimeCollection) => QueryFn,
+  options: { realtimeUseFilter?: boolean } = {}
 ) {
   const mockFetch = createMockFetch()
   const mockChannel = createMockChannel()
-  const { collection } = createRealtimeUsersCollection(mockFetch, mockChannel)
+  const { collection } = createRealtimeUsersCollection(
+    mockFetch,
+    mockChannel,
+    options
+  )
   track(collection)
 
   const live = startLiveQuery(collection, buildQuery)
@@ -274,6 +279,20 @@ describe("realtime filter propagation", () => {
         (collection) => (q) => q.from({ user: collection })
       )
       expect(filtersFor(mockChannel, "UPDATE")).toEqual([null])
+    })
+
+    test("realtimeUseFilter: false subscribes catch-all despite a filterable WHERE", async () => {
+      const { mockChannel } = await captureChannel(
+        (collection) => (q) =>
+          q.from({ user: collection }).where(({ user }) => eq(user.id, 1)),
+        { realtimeUseFilter: false }
+      )
+      // The WHERE is representable as a Realtime filter, but filtering is off,
+      // so every listener subscribes to all changes and no redundant unfiltered
+      // UPDATE listener is added.
+      expect(insertFilters(mockChannel)).toEqual([null])
+      expect(filtersFor(mockChannel, "UPDATE")).toEqual([null])
+      expect(filtersFor(mockChannel, "DELETE")).toEqual([null])
     })
   })
 

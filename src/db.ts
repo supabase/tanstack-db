@@ -25,6 +25,14 @@ interface SupabaseCollectionOptions<TSchema extends StandardSchemaV1> {
   queryClient?: QueryClient
   /** Whether to receive updates when a record has been inserted, updated, or deleted by another user */
   realtime?: boolean
+  /**
+   * Whether to push each query's WHERE clause to the Realtime subscription as a
+   * server-side `postgres_changes` filter. Only applies when `realtime` is on.
+   * Defaults to `true`. Set to `false` to subscribe to every change on the
+   * table and filter client-side instead — simpler, at the cost of more
+   * Realtime traffic.
+   */
+  realtimeUseFilter?: boolean
   /** The schema of the collection */
   schema: TSchema
   /** The supabase browser client */
@@ -40,6 +48,12 @@ interface TableEntry {
   realtimeFiltersKey: string | null
   /** Resolves once the current channel finished subscribing (or gave up) */
   realtimeSubscribed: Promise<void> | null
+  /**
+   * Whether WHERE clauses are pushed to Realtime as server-side filters. When
+   * `false`, the table always subscribes with a catch-all and filters
+   * client-side.
+   */
+  realtimeUseFilter: boolean
   /**
    * Filter sets the server has rejected. They are replaced by a catch-all
    * subscription instead of being retried on every observer change.
@@ -185,14 +199,20 @@ const ensureQueryCacheSubscription = (queryClient: QueryClient) => {
 
       // Derive the Realtime filters from the WHERE clause of every active query
       // so the subscription only receives changes that those queries care about.
-      const whereExpressions = queries.map(
-        (query) => query.meta?.loadSubsetOptions?.where
-      )
-      let filters = buildRealtimeFilters(whereExpressions)
-      let filtersKey = JSON.stringify(filters)
-      if (entry.rejectedFilterKeys.has(filtersKey)) {
-        filters = CATCH_ALL_FILTERS
-        filtersKey = CATCH_ALL_FILTERS_KEY
+      // When server-side filtering is disabled, skip that entirely and subscribe
+      // to every change on the table instead.
+      let filters = CATCH_ALL_FILTERS
+      let filtersKey = CATCH_ALL_FILTERS_KEY
+      if (entry.realtimeUseFilter) {
+        const whereExpressions = queries.map(
+          (query) => query.meta?.loadSubsetOptions?.where
+        )
+        filters = buildRealtimeFilters(whereExpressions)
+        filtersKey = JSON.stringify(filters)
+        if (entry.rejectedFilterKeys.has(filtersKey)) {
+          filters = CATCH_ALL_FILTERS
+          filtersKey = CATCH_ALL_FILTERS_KEY
+        }
       }
 
       // Reuse the existing channel when the set of filters hasn't changed.
@@ -215,7 +235,8 @@ const ensureQueryCacheSubscription = (queryClient: QueryClient) => {
 const registerTable = (
   queryClient: QueryClient,
   tableName: string,
-  supabase: SupabaseClient
+  supabase: SupabaseClient,
+  realtimeUseFilter: boolean
 ): TableEntry => {
   ensureQueryCacheSubscription(queryClient)
   // biome-ignore lint/style/noNonNullAssertion: <explanation>
@@ -229,6 +250,7 @@ const registerTable = (
       realtimeFiltersKey: null,
       realtimeSubscribed: null,
       rejectedFilterKeys: new Set(),
+      realtimeUseFilter,
     })
   }
 
@@ -243,6 +265,7 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
   queryClient,
   supabase,
   realtime,
+  realtimeUseFilter = true,
 }: SupabaseCollectionOptions<TSchema>) => {
   // if the query client is not provided, use the global query client
   queryClient = queryClient ?? getQueryClient()
@@ -260,7 +283,7 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
 
   let entry: TableEntry | null = null
   if (realtime) {
-    entry = registerTable(queryClient, tableName, supabase)
+    entry = registerTable(queryClient, tableName, supabase, realtimeUseFilter)
   }
   const config = queryCollectionOptions({
     id: tableName,

@@ -198,7 +198,8 @@ export function emit(mockChannel: MockChannel, payload: any) {
 
 export function createRealtimeUsersCollection(
   mockFetch: typeof fetch,
-  mockChannel: MockChannel | (() => MockChannel)
+  mockChannel: MockChannel | (() => MockChannel),
+  options: { realtimeUseFilter?: boolean } = {}
 ) {
   // A fresh QueryClient keeps the module-level realtime registry in db.ts
   // isolated per test.
@@ -219,6 +220,7 @@ export function createRealtimeUsersCollection(
       schema: usersSchema,
       supabase,
       realtime: true,
+      realtimeUseFilter: options.realtimeUseFilter,
       queryClient,
     })
   )
