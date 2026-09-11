@@ -11,8 +11,9 @@ import {
   supabaseOnUpdate,
   supabaseQueryFn,
 } from "./functions"
+import { realtimeFiltersToSearch } from "./postgrest-filters"
 import { getQueryClient } from "./query-client"
-import { attachSupabaseListeners, buildRealtimeFilters } from "./realtime"
+import { attachSupabaseListeners } from "./realtime"
 
 interface SupabaseCollectionOptions<TSchema extends StandardSchemaV1> {
   /**
@@ -63,8 +64,10 @@ interface TableEntry {
 }
 
 /** A subscription that receives every change for the table. */
-const CATCH_ALL_FILTERS: Array<string | null> = [null]
-const CATCH_ALL_FILTERS_KEY = JSON.stringify(CATCH_ALL_FILTERS)
+const CATCH_ALL_FILTERS = [new URLSearchParams()]
+const realtimeFiltersKey = (filters: URLSearchParams[]) =>
+  JSON.stringify(filters.map((filter) => Array.from(filter)))
+const CATCH_ALL_FILTERS_KEY = realtimeFiltersKey(CATCH_ALL_FILTERS)
 
 /**
  * Channel topics are namespaced and numbered because `supabase.channel()`
@@ -99,7 +102,7 @@ const subscribeToChanges = (
   entry: TableEntry,
   tableName: string,
   collection: Collection<any, any>,
-  filters: Array<string | null>,
+  filters: URLSearchParams[],
   filtersKey: string
 ) => {
   const previousChannel = entry.realtimeChannel
@@ -207,8 +210,8 @@ const ensureQueryCacheSubscription = (queryClient: QueryClient) => {
         const whereExpressions = queries.map(
           (query) => query.meta?.loadSubsetOptions?.where
         )
-        filters = buildRealtimeFilters(whereExpressions)
-        filtersKey = JSON.stringify(filters)
+        filters = realtimeFiltersToSearch(whereExpressions)
+        filtersKey = realtimeFiltersKey(filters)
         if (entry.rejectedFilterKeys.has(filtersKey)) {
           filters = CATCH_ALL_FILTERS
           filtersKey = CATCH_ALL_FILTERS_KEY

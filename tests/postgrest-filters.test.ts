@@ -20,6 +20,7 @@ import {
   keyColumnsToSearch,
   loadSubsetOptionsToSearch,
   queryIrToSearch,
+  realtimeFiltersToSearch,
   subsetParamsToSearch,
 } from "../src/postgrest-filters"
 
@@ -37,6 +38,72 @@ const active = col("active")
 const sort = (ref: IR.PropRef, direction: "asc" | "desc") => ({
   expression: ref,
   compareOptions: { direction, nulls: "last" as const },
+})
+
+const realtimeEntries = (...where: Array<IR.BasicExpression<boolean>>) =>
+  realtimeFiltersToSearch(where).map((params) => Array.from(params))
+
+describe("realtimeFiltersToSearch", () => {
+  test("builds decoded URL parameters for supported comparisons", () => {
+    expect(realtimeEntries(eq(id, 1))).toEqual([[["id", "eq.1"]]])
+    expect(realtimeEntries(not(eq(active, false)))).toEqual([
+      [["active", "neq.false"]],
+    ])
+    expect(realtimeEntries(isNull(name))).toEqual([[["name", "is.null"]]])
+    expect(realtimeEntries(inArray(id, [1, 2, 3]))).toEqual([
+      [["id", "in.(1,2,3)"]],
+    ])
+  })
+
+  test("sorts and deduplicates AND conditions and active-query filters", () => {
+    const filter = and(gt(id, 5), eq(active, true), eq(active, true))
+    const equivalent = and(eq(active, true), gt(id, 5))
+    expect(realtimeEntries(filter, equivalent)).toEqual([
+      [
+        ["active", "eq.true"],
+        ["id", "gt.5"],
+      ],
+    ])
+  })
+
+  test("quotes reserved characters without URL-encoding the decoded value", () => {
+    expect(realtimeEntries(eq(name, "Doe, Jane"))).toEqual([
+      [["name", 'eq."Doe, Jane"']],
+    ])
+  })
+
+  // Shares PostgREST's quoteValue, so quoting matches the request path: reserved
+  // characters, surrounding whitespace, and the empty string are all quoted.
+  test.each([
+    ["", '""'],
+    [" a ", '" a "'],
+    ['a"b\\c', '"a\\"b\\\\c"'],
+  ])("quotes value %j like the PostgREST request path", (value, quoted) => {
+    expect(realtimeEntries(eq(name, value))).toEqual([
+      [["name", `eq.${quoted}`]],
+    ])
+    expect(realtimeEntries(inArray(name, [value]))).toEqual([
+      [["name", `in.(${quoted})`]],
+    ])
+  })
+
+  test("serializes bigints and Dates but rejects non-finite numbers", () => {
+    const when = new Date("2020-01-02T03:04:05.000Z")
+    expect(realtimeEntries(eq(id, 9_007_199_254_740_993n))).toEqual([
+      [["id", "eq.9007199254740993"]],
+    ])
+    expect(realtimeEntries(eq(name, when))).toEqual([
+      [["name", "eq.2020-01-02T03:04:05.000Z"]],
+    ])
+    // Non-finite numbers are not serializable, so the query falls back.
+    expect(realtimeEntries(eq(id, Number.POSITIVE_INFINITY))).toEqual([[]])
+  })
+
+  test("uses empty parameters as the catch-all for unsupported filters", () => {
+    expect(realtimeEntries()).toEqual([[]])
+    expect(realtimeEntries(inArray(id, []))).toEqual([[]])
+    expect(realtimeEntries(or(eq(id, 1), eq(id, 2)))).toEqual([[]])
+  })
 })
 
 // ── subsetParamsToSearch ────────────────────────────────────────────

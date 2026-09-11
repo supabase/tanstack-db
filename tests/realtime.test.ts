@@ -13,7 +13,7 @@ import {
   not,
 } from "@tanstack/db"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
-import { buildRealtimeFilters } from "../src/realtime"
+import { realtimeFiltersToSearch } from "../src/postgrest-filters"
 import {
   createMockChannel,
   createMockFetch,
@@ -668,10 +668,12 @@ describe("realtime filter propagation", () => {
   // `or(...)` (and other unsupported expressions) cannot be driven through the
   // live-query path because the query's own supabaseQueryFn calls the same
   // throwing extractSimpleComparisons. Cover the defensive fallback directly.
-  describe("buildRealtimeFilters falls back instead of throwing", () => {
+  describe("realtimeFiltersToSearch falls back instead of throwing", () => {
     test("an unsupported expression yields a catch-all", () => {
       const orExpression = { type: "func", name: "or", args: [] } as any
-      expect(buildRealtimeFilters([orExpression])).toEqual([null])
+      expect(realtimeFiltersToSearch([orExpression])).toEqual([
+        new URLSearchParams(),
+      ])
     })
   })
 })

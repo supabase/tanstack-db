@@ -17,7 +17,10 @@ const makeSupabase = (): SupabaseClient =>
 // Each collection gets its own QueryClient: the realtime channel registry in
 // src/db.ts is keyed by QueryClient, so a fresh one per collection prevents
 // channels leaking across tests.
-const makeUsersCollection = ({ realtime = false } = {}) => {
+const makeUsersCollection = ({
+  realtime = false,
+  realtimeUseFilter = false,
+} = {}) => {
   const supabase = makeSupabase()
   const collection = createCollection(
     supabaseCollectionOptions({
@@ -27,10 +30,16 @@ const makeUsersCollection = ({ realtime = false } = {}) => {
       supabase,
       queryClient: new QueryClient(),
       realtime,
+      realtimeUseFilter,
     })
   )
   return { collection, supabase }
 }
+
+// A realtime collection that pushes each live query's WHERE down to the
+// server-side postgres_changes filter (see realtimeUseFilter in src/db.ts).
+export const makeFilteredRealtimeUsers = () =>
+  makeUsersCollection({ realtime: true, realtimeUseFilter: true })
 
 type UsersContext = ReturnType<typeof makeUsersCollection>
 type UsersCollection = UsersContext["collection"]
@@ -53,7 +62,7 @@ type LiveUsersCollection = ReturnType<typeof liveUsers>
 // joined, so changes written afterwards are guaranteed to be captured. The
 // adapter numbers its channel topics (see realtimeChannelTopicPrefix in
 // src/db.ts), and supabase-js exposes them under its own "realtime:" prefix.
-const waitForChannel = (supabase: SupabaseClient, table: string) =>
+export const waitForChannel = (supabase: SupabaseClient, table: string) =>
   vi.waitFor(() => {
     const prefix = `realtime:${realtimeChannelTopicPrefix(table)}`
     const joined = supabase
