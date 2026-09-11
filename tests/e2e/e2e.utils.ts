@@ -71,6 +71,32 @@ export const waitForChannel = (supabase: SupabaseClient, table: string) =>
     expect(joined).toBe(true)
   }, WAIT)
 
+// A live query and its base collection both expose these; the helper below only
+// needs to drive their lifecycle, not their query shape.
+type Preloadable = {
+  preload: () => Promise<unknown>
+  cleanup: () => Promise<unknown>
+}
+
+// Preloads one or more filtered realtime live queries over a shared collection
+// and blocks until the channel has actually joined — which only happens once the
+// server accepted the filters these queries emit, so it doubles as proof the
+// emitted filter syntax is valid. Returns a cleanup to await in the test's
+// `finally`, tearing down the live queries, the base collection, and the
+// client's channels.
+export const startFilteredRealtime = async (
+  ctx: UsersContext,
+  ...lives: Preloadable[]
+) => {
+  await Promise.all(lives.map((live) => live.preload()))
+  await waitForChannel(ctx.supabase, "users")
+  return async () => {
+    await Promise.all(lives.map((live) => live.cleanup()))
+    await ctx.collection.cleanup()
+    await ctx.supabase.removeAllChannels()
+  }
+}
+
 const preloadSeeded = async (live: LiveUsersCollection) => {
   await live.preload()
   // The reset_e2e() seed always yields exactly Alice and Bob.
