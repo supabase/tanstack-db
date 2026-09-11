@@ -29,9 +29,9 @@ interface SupabaseCollectionOptions<TSchema extends StandardSchemaV1> {
   /**
    * Whether to push each query's WHERE clause to the Realtime subscription as a
    * server-side `postgres_changes` filter. Only applies when `realtime` is on.
-   * Defaults to `true`. Set to `false` to subscribe to every change on the
-   * table and filter client-side instead — simpler, at the cost of more
-   * Realtime traffic.
+   * Defaults to `false`, which subscribes to every change on the table and
+   * filters client-side — simpler, at the cost of more Realtime traffic. Set to
+   * `true` to narrow the subscription server-side.
    */
   realtimeUseFilter?: boolean
   /** The schema of the collection */
@@ -268,7 +268,7 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
   queryClient,
   supabase,
   realtime,
-  realtimeUseFilter = true,
+  realtimeUseFilter = false,
 }: SupabaseCollectionOptions<TSchema>) => {
   // if the query client is not provided, use the global query client
   queryClient = queryClient ?? getQueryClient()

@@ -64,15 +64,16 @@ function startLiveQuery(
 // realtime channel to be attached, then returns the recording mock channel.
 async function captureChannel(
   buildQuery: (collection: RealtimeCollection) => QueryFn,
-  options: { realtimeUseFilter?: boolean } = {}
+  // These tests exercise server-side filtering, which is opt-in on the
+  // collection (realtimeUseFilter defaults to false), so enable it by default
+  // here and let individual tests override it.
+  { realtimeUseFilter = true }: { realtimeUseFilter?: boolean } = {}
 ) {
   const mockFetch = createMockFetch()
   const mockChannel = createMockChannel()
-  const { collection } = createRealtimeUsersCollection(
-    mockFetch,
-    mockChannel,
-    options
-  )
+  const { collection } = createRealtimeUsersCollection(mockFetch, mockChannel, {
+    realtimeUseFilter,
+  })
   track(collection)
 
   const live = startLiveQuery(collection, buildQuery)
@@ -294,6 +295,29 @@ describe("realtime filter propagation", () => {
       expect(filtersFor(mockChannel, "UPDATE")).toEqual([null])
       expect(filtersFor(mockChannel, "DELETE")).toEqual([null])
     })
+
+    test("defaults to catch-all when realtimeUseFilter is omitted", async () => {
+      const mockFetch = createMockFetch()
+      const mockChannel = createMockChannel()
+      // No realtimeUseFilter option → the collection default (false) applies.
+      const { collection } = createRealtimeUsersCollection(
+        mockFetch,
+        mockChannel
+      )
+      track(collection)
+
+      const live = startLiveQuery(
+        collection,
+        (c) => (q) => q.from({ user: c }).where(({ user }) => eq(user.id, 1))
+      )
+      await live.preload()
+      await live.toArrayWhenReady()
+      await vi.waitFor(() => expect(mockChannel.on).toHaveBeenCalled())
+
+      // A filterable WHERE is not pushed; every listener subscribes to all rows.
+      expect(insertFilters(mockChannel)).toEqual([null])
+      expect(filtersFor(mockChannel, "UPDATE")).toEqual([null])
+    })
   })
 
   describe("listener layout", () => {
@@ -492,7 +516,8 @@ describe("realtime filter propagation", () => {
           const channel = createMockChannel()
           channels.push(channel)
           return channel
-        }
+        },
+        { realtimeUseFilter: true }
       )
       track(collection)
 
@@ -581,7 +606,8 @@ describe("realtime filter propagation", () => {
           })
           channels.push(channel)
           return channel
-        }
+        },
+        { realtimeUseFilter: true }
       )
       track(collection)
 
