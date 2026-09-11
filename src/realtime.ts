@@ -18,12 +18,14 @@ export type RealtimeSubscription = {
    */
   ready: Promise<void>
   /**
-   * Resolves `true` once the channel is joined and `false` once the server
-   * rejected the subscription (or the channel closed before joining). Unlike
-   * {@link ready} it is not time-bounded: while realtime-js is still retrying
-   * the join it stays pending.
+   * Resolves with the terminal subscribe status — `SUBSCRIBED`,
+   * `CHANNEL_ERROR`, or `CLOSED`. Unlike {@link ready} it is not time-bounded:
+   * while realtime-js is still retrying the join (e.g. `TIMED_OUT`) it stays
+   * pending. Callers distinguish a filter rejection (`CHANNEL_ERROR` on a
+   * filtered subscription) from a transient connection error, so a dropped
+   * connection is not mistaken for a server rejection.
    */
-  joined: Promise<boolean>
+  outcome: Promise<REALTIME_SUBSCRIBE_STATES>
 }
 
 /** Never let a fetch wait longer than this for the channel to subscribe. */
@@ -148,9 +150,10 @@ export const attachSupabaseListeners = <
     (p) => handleDelete(p as RealtimePostgresChangesPayload<T>)
   )
 
-  let resolveJoined: (joined: boolean) => void = () => undefined
-  const joined = new Promise<boolean>((resolve) => {
-    resolveJoined = resolve
+  let resolveOutcome: (status: REALTIME_SUBSCRIBE_STATES) => void = () =>
+    undefined
+  const outcome = new Promise<REALTIME_SUBSCRIBE_STATES>((resolve) => {
+    resolveOutcome = resolve
   })
 
   const ready = new Promise<void>((resolve) => {
@@ -158,20 +161,21 @@ export const attachSupabaseListeners = <
     channel.subscribe((status) => {
       clearTimeout(timeout)
       resolve()
-      if (status === REALTIME_SUBSCRIBE_STATES.SUBSCRIBED) {
-        resolveJoined(true)
-      } else if (
+      // SUBSCRIBED means the join succeeded. CHANNEL_ERROR is how the server
+      // rejects a subscription — typically a filter it cannot evaluate — but it
+      // is also emitted for a transient transport failure, so the caller tells
+      // the two apart. CLOSED is a terminal close before joining. TIMED_OUT is
+      // deliberately not terminal: realtime-js keeps retrying the join and
+      // reports the outcome through this same callback.
+      if (
+        status === REALTIME_SUBSCRIBE_STATES.SUBSCRIBED ||
         status === REALTIME_SUBSCRIBE_STATES.CHANNEL_ERROR ||
         status === REALTIME_SUBSCRIBE_STATES.CLOSED
       ) {
-        // CHANNEL_ERROR is how the server rejects a subscription — typically a
-        // filter it cannot evaluate — and it errors the whole channel.
-        // TIMED_OUT is deliberately not terminal: realtime-js keeps retrying
-        // the join and reports the outcome through this same callback.
-        resolveJoined(false)
+        resolveOutcome(status)
       }
     })
   })
 
-  return { channel, ready, joined }
+  return { channel, ready, outcome }
 }

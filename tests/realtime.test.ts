@@ -685,6 +685,84 @@ describe("realtime filter propagation", () => {
       // Data loading is never held hostage by a failed subscription.
       await secondPreloaded
     })
+
+    test("a transient error on the sole catch-all keeps the channel so it can reconnect", async () => {
+      const mockFetch = createMockFetch()
+      const channels: Array<MockChannel> = []
+      const { collection, supabase } = createRealtimeUsersCollection(
+        mockFetch,
+        () => {
+          const channel = createMockChannel({ autoSubscribe: false })
+          channels.push(channel)
+          return channel
+        }
+        // realtimeUseFilter defaults to false → a single catch-all subscription.
+      )
+      track(collection)
+
+      const live = startLiveQuery(collection, (c) => (q) => q.from({ user: c }))
+      const preloaded = live.preload()
+      await vi.waitFor(() => expect(channels.length).toBe(1))
+      await vi.waitFor(() => expect(channels[0].subscribe).toHaveBeenCalled())
+
+      // The only channel reports a transient connection error before joining. A
+      // catch-all has nothing to reject, so this is not a filter rejection.
+      channels[0].confirmSubscribed("CHANNEL_ERROR")
+      await preloaded
+
+      // It is NOT removed — realtime-js keeps retrying the join and its listeners
+      // stay attached — and no replacement is opened, so the table is never left
+      // without a channel until an observer changes.
+      expect(supabase.removeChannel).not.toHaveBeenCalled()
+      expect(channels.length).toBe(1)
+    })
+
+    test("tearing down all queries removes the joined and the in-flight channel", async () => {
+      const mockFetch = createMockFetch()
+      const channels: Array<MockChannel> = []
+      const { collection, supabase } = createRealtimeUsersCollection(
+        mockFetch,
+        () => {
+          const channel = createMockChannel({
+            autoSubscribe: channels.length === 0,
+          })
+          channels.push(channel)
+          return channel
+        },
+        { realtimeUseFilter: true }
+      )
+      track(collection)
+
+      const first = startLiveQuery(
+        collection,
+        (c) => (q) => q.from({ user: c }).where(({ user }) => eq(user.id, 1))
+      )
+      await first.preload()
+      await first.toArrayWhenReady()
+      await vi.waitFor(() => expect(channels.length).toBe(1))
+
+      // A second query opens a replacement channel that never joins, so it stays
+      // pending alongside the first, still-joined channel.
+      const second = startLiveQuery(
+        collection,
+        (c) => (q) => q.from({ user: c }).where(({ user }) => gt(user.id, 5))
+      )
+      const secondPreloaded = second.preload()
+      await vi.waitFor(() => expect(channels.length).toBeGreaterThan(1))
+      await secondPreloaded
+
+      // Tearing down every active query must dispose every channel this table
+      // opened — a joined channel and any swap still in flight — with none left
+      // behind.
+      await first.cleanup()
+      await second.cleanup()
+
+      await vi.waitFor(() => {
+        for (const channel of channels) {
+          expect(supabase.removeChannel).toHaveBeenCalledWith(channel)
+        }
+      })
+    })
   })
 
   // `or(...)` (and other unsupported expressions) cannot be driven through the

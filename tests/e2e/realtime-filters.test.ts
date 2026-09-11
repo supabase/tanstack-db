@@ -1,4 +1,5 @@
 import {
+  and,
   createLiveQueryCollection,
   eq,
   gt,
@@ -118,6 +119,13 @@ for (const c of COMPARISONS) {
         WAIT
       )
       expect(live.toArray.some((row) => row.id === c.miss)).toBe(false)
+      // Under a correct server-side filter the excluded row is never delivered,
+      // so it must not reach the BASE collection either. A silent fallback to a
+      // catch-all subscription would sync it here, which the live query's own
+      // client-side re-filtering would otherwise hide.
+      expect(ctx.collection.toArray.some((row) => row.id === c.miss)).toBe(
+        false
+      )
     } finally {
       await cleanup()
     }
@@ -149,6 +157,8 @@ test("realtime filter neq (boolean) delivers only non-matching-value rows", asyn
       WAIT
     )
     expect(live.toArray.some((row) => row.id === 301)).toBe(false)
+    // A silent fallback to catch-all would sync the excluded row into the base.
+    expect(ctx.collection.toArray.some((row) => row.id === 301)).toBe(false)
   } finally {
     await cleanup()
   }
@@ -176,6 +186,8 @@ test("realtime filter not.gt (negated comparison) is accepted server-side", asyn
       WAIT
     )
     expect(live.toArray.some((row) => row.id === 101)).toBe(false)
+    // A silent fallback to catch-all would sync the excluded row into the base.
+    expect(ctx.collection.toArray.some((row) => row.id === 101)).toBe(false)
   } finally {
     await cleanup()
   }
@@ -203,6 +215,8 @@ test("realtime filter in.(...) is accepted and matches list members", async ({
       WAIT
     )
     expect(live.toArray.some((row) => row.id === 303)).toBe(false)
+    // A silent fallback to catch-all would sync the excluded row into the base.
+    expect(ctx.collection.toArray.some((row) => row.id === 303)).toBe(false)
   } finally {
     await cleanup()
   }
@@ -228,6 +242,8 @@ test("realtime filter not.in excludes list members", async ({ other }) => {
       WAIT
     )
     expect(live.toArray.some((row) => row.id === 301)).toBe(false)
+    // A silent fallback to catch-all would sync the excluded row into the base.
+    expect(ctx.collection.toArray.some((row) => row.id === 301)).toBe(false)
   } finally {
     await cleanup()
   }
@@ -286,6 +302,42 @@ test("realtime filter accepts a 100-member in.(...) list", async ({
       WAIT
     )
     expect(live.toArray.some((row) => row.id === 999)).toBe(false)
+    // A silent fallback to catch-all would sync the excluded row into the base.
+    expect(ctx.collection.toArray.some((row) => row.id === 999)).toBe(false)
+  } finally {
+    await cleanup()
+  }
+})
+
+// A composite AND becomes a single comma-joined condition list
+// (`id=gt.300,id=lt.500`). Unit tests prove we format it; this proves the real
+// server accepts a multi-condition filter and evaluates every condition rather
+// than silently rejecting it (which would fall back to catch-all).
+test("realtime filter with two AND-ed conditions is accepted and evaluated", async ({
+  other,
+}) => {
+  const ctx = makeFilteredRealtimeUsers()
+  const live = createLiveQueryCollection((q) =>
+    q
+      .from({ row: ctx.collection })
+      .where(({ row }) => and(gt(row.id, 300), lt(row.id, 500)))
+      .select(({ row }) => ({ id: row.id }))
+  )
+  const cleanup = await startFilteredRealtime(ctx, live)
+  try {
+    const { error } = await other
+      .from("users")
+      .insert([userRow(400), userRow(600)] as unknown as never)
+    expect(error).toBeNull()
+
+    await vi.waitFor(
+      () => expect(live.toArray.some((row) => row.id === 400)).toBe(true),
+      WAIT
+    )
+    // 600 satisfies gt.300 but not lt.500: it must be excluded, proving the
+    // server honours both conditions and did not fall back to catch-all.
+    expect(live.toArray.some((row) => row.id === 600)).toBe(false)
+    expect(ctx.collection.toArray.some((row) => row.id === 600)).toBe(false)
   } finally {
     await cleanup()
   }
