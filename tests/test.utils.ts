@@ -156,8 +156,8 @@ export function createMockChannel({
       onCalls.push({ type, config, handler })
       return channel
     }),
-    // The collection's first fetch waits for the subscription to settle, so the
-    // mock has to report a status like the real channel does.
+    // The adapter drives channel swaps and the rejection fallback off the
+    // subscription status, so the mock reports one like the real channel does.
     subscribe: vi.fn((callback?: (status: string) => void) => {
       if (autoSubscribe) {
         callback?.("SUBSCRIBED")

@@ -1,155 +1,100 @@
-import {
-  extractSimpleComparisons,
-  type LoadSubsetOptions,
-  type SimpleComparison,
-} from "@tanstack/db"
-import { type PostgrestParam, paramsToSearch, quoteValue } from "./common"
+import type { LoadSubsetOptions } from "@tanstack/db"
+import { type PostgrestParam, toPostgrestParams } from "./common"
 
 type WhereExpression = LoadSubsetOptions["where"]
 type ColumnParam = Extract<PostgrestParam, { kind: "column" }>
 
-/** Maps TanStack DB operators to Realtime postgres_changes operators. */
-const REALTIME_OPERATORS: Record<string, string> = {
-  eq: "eq",
-  not_eq: "neq",
-  gt: "gt",
-  not_gt: "not.gt",
-  gte: "gte",
-  not_gte: "not.gte",
-  lt: "lt",
-  not_lt: "not.lt",
-  lte: "lte",
-  not_lte: "not.lte",
-  in: "in",
-  not_in: "not.in",
-  isNull: "is",
-  not_isNull: "not.is",
-}
-
+/**
+ * Realtime `postgres_changes` accepts only a top-level column compared with one
+ * of these operators (optionally negated with `not.`). Anything else — an
+ * embedded column, an OR group, a function — cannot be pushed and forces the
+ * catch-all.
+ */
+const REALTIME_OPERATOR = /^(?:not\.)?(?:eq|gt|gte|lt|lte|in|is)$/
 /** Realtime rejects `in` filters with more than this many values. */
 const MAX_IN_VALUES = 100
-const NOT_PREFIX = "not_"
 
 /**
- * Whether a value is a scalar Realtime can filter on. Anything else (null,
- * undefined, objects, non-finite numbers) makes the whole subscription fall
- * back to a catch-all rather than being coerced to a mismatching string.
+ * Whether a rendered PostgREST param is expressible as a single Realtime
+ * condition. Realtime shares PostgREST's WHERE grammar, so the shared renderer
+ * already produced the exact `operator.value` wire form; this only rejects the
+ * shapes Realtime cannot evaluate.
  */
-const isRealtimeScalar = (value: unknown): boolean => {
-  if (typeof value === "number") return Number.isFinite(value)
-  return (
-    typeof value === "boolean" ||
-    typeof value === "bigint" ||
-    typeof value === "string" ||
-    value instanceof Date
-  )
+const isRealtimeParam = (param: PostgrestParam): param is ColumnParam => {
+  // OR groups and other embedded filters have no single-column Realtime form.
+  if (param.kind !== "column") {
+    return false
+  }
+  if (!REALTIME_OPERATOR.test(param.operator)) {
+    return false
+  }
+  // Realtime can only evaluate a top-level table column, never an embedded one.
+  if (param.column.includes(".")) {
+    return false
+  }
+  if (param.operator.endsWith("in")) {
+    // An empty IN list matches nothing; the catch-all keeps the subscription
+    // usable and lets the live query re-filter client-side.
+    if (param.value === "()") {
+      return false
+    }
+    // Splitting on commas overcounts values that quote a comma, which only ever
+    // trips the limit early and falls back to the (correct) catch-all.
+    const members = param.value.slice(1, -1).split(",")
+    if (members.length > MAX_IN_VALUES) {
+      return false
+    }
+  }
+  return true
 }
 
 /**
- * Render a scalar for Realtime's PostgREST-style filter grammar, or null when
- * the value is not Realtime-serializable. Realtime shares PostgREST's
- * list/group quoting, so {@link quoteValue} quotes commas, parentheses, quotes,
- * backslashes, and surrounding whitespace to keep them from splitting a
- * condition.
- */
-const serializeRealtimeValue = (value: unknown): string | null =>
-  isRealtimeScalar(value) ? quoteValue(value) : null
-
-const serializeRealtimeInValues = (value: unknown): string | null => {
-  if (
-    !Array.isArray(value) ||
-    value.length === 0 ||
-    value.length > MAX_IN_VALUES
-  ) {
-    return null
-  }
-
-  const serialized: string[] = []
-  for (const entry of value) {
-    const rendered = serializeRealtimeValue(entry)
-    if (rendered === null) return null
-    serialized.push(rendered)
-  }
-  return `(${serialized.join(",")})`
-}
-
-/** Convert one flattened TanStack comparison to a Realtime URL parameter. */
-const comparisonToRealtimeParam = (
-  comparison: SimpleComparison
-): ColumnParam | null => {
-  const operator = REALTIME_OPERATORS[comparison.operator]
-  if (!operator) return null
-
-  // Realtime can only evaluate one top-level table column per condition.
-  const column =
-    comparison.field?.length === 1 ? comparison.field[0] : undefined
-  if (typeof column !== "string" || column.length === 0) return null
-
-  const baseOperator = comparison.operator.startsWith(NOT_PREFIX)
-    ? comparison.operator.slice(NOT_PREFIX.length)
-    : comparison.operator
-
-  if (baseOperator === "isNull") {
-    return { kind: "column", column, operator, value: "null" }
-  }
-
-  if (baseOperator === "in") {
-    const value = serializeRealtimeInValues(comparison.value)
-    return value === null ? null : { kind: "column", column, operator, value }
-  }
-
-  const value = serializeRealtimeValue(comparison.value)
-  return value === null ? null : { kind: "column", column, operator, value }
-}
-
-const paramToCondition = (param: ColumnParam): string =>
-  `${param.column}=${param.operator}.${param.value}`
-
-const compareKeys = (left: string, right: string): number =>
-  left < right ? -1 : left > right ? 1 : 0
-
-/**
- * Build one set of URL parameters per active query for use in Realtime
- * subscriptions. Each non-empty params object represents comma-ANDed
- * `column=operator.value` conditions; an empty object represents a catch-all
- * subscription.
+ * Build the Realtime `postgres_changes` filters for a table's active queries.
+ *
+ * The result is a single `URLSearchParams` with one repeated `filter` entry per
+ * active query, each value being that query's AND-ed conditions comma-joined
+ * into Realtime's wire form (e.g. `active=eq.true,id=gt.5`). Conditions and
+ * queries are sorted and deduplicated so an unchanged filter set produces a
+ * stable `toString()` key. An empty `URLSearchParams` is the catch-all: it is
+ * returned whenever any query is unfiltered or uses an expression Realtime
+ * cannot evaluate, since a narrower subscription would drop rows that query
+ * needs.
  */
 export function realtimeFiltersToSearch(
   whereExpressions: WhereExpression[]
-): URLSearchParams[] {
-  const filters = new Map<string, URLSearchParams>()
+): URLSearchParams {
+  const groups = new Set<string>()
 
   for (const where of whereExpressions) {
-    let comparisons: SimpleComparison[]
+    let params: PostgrestParam[]
     try {
-      comparisons = extractSimpleComparisons(where)
+      // `strict` throws on anything unpushable (server aggregates, functions);
+      // `quoteScalars` matches the request path's quoting so reserved characters
+      // survive the comma-joined condition list.
+      params = toPostgrestParams(where, { quoteScalars: true, strict: true })
     } catch {
-      return [new URLSearchParams()]
+      return new URLSearchParams()
     }
 
-    if (comparisons.length === 0) return [new URLSearchParams()]
-
-    const conditions = new Map<string, ColumnParam>()
-    for (const comparison of comparisons) {
-      const param = comparisonToRealtimeParam(comparison)
-      if (param === null) return [new URLSearchParams()]
-      conditions.set(paramToCondition(param), param)
+    // A query with no pushable conditions matches every row, so the whole table
+    // must fall back to the catch-all.
+    if (params.length === 0) {
+      return new URLSearchParams()
     }
 
-    const params = paramsToSearch(
-      Array.from(conditions.entries())
-        .sort(([left], [right]) => compareKeys(left, right))
-        .map(([, param]) => param)
-    )
-    const key = Array.from(params)
-      .map(([column, value]) => `${column}=${value}`)
-      .join(",")
-    filters.set(key, params)
+    const conditions = new Set<string>()
+    for (const param of params) {
+      if (!isRealtimeParam(param)) {
+        return new URLSearchParams()
+      }
+      conditions.add(`${param.column}=${param.operator}.${param.value}`)
+    }
+    groups.add(Array.from(conditions).sort().join(","))
   }
 
-  return filters.size > 0
-    ? Array.from(filters.entries())
-        .sort(([left], [right]) => compareKeys(left, right))
-        .map(([, params]) => params)
-    : [new URLSearchParams()]
+  const search = new URLSearchParams()
+  for (const filter of Array.from(groups).sort()) {
+    search.append("filter", filter)
+  }
+  return search
 }

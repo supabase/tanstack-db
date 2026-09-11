@@ -7,6 +7,14 @@ export type PostgrestParam =
 
 interface FilterOptions {
   mergeIn?: boolean
+  /**
+   * Quote top-level scalar values (the Realtime path). PostgREST sends each
+   * comparison as its own `column=op.value` query param, so top-level scalars
+   * must stay raw; Realtime comma-joins conditions into a single `filter`, so
+   * top-level scalars must be quoted to keep reserved characters (commas,
+   * whitespace) from splitting a condition.
+   */
+  quoteScalars?: boolean
   strict?: boolean
   stripAlias?: boolean
 }
@@ -198,7 +206,11 @@ export function toPostgrestParams(
   const conjuncts = flattenAnd(expr)
   const filters = options.mergeIn ? mergeInFilters(conjuncts) : conjuncts
   return filters.flatMap((filter): PostgrestParam[] => {
-    const comparison = renderComparison(filter, false, options)
+    const comparison = renderComparison(
+      filter,
+      options.quoteScalars ?? false,
+      options
+    )
     if (comparison) return [{ kind: "column", ...comparison }]
     const embedded = toFilterString(filter, options)
     if (embedded !== null) {

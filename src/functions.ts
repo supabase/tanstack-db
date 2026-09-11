@@ -12,6 +12,7 @@ import {
   subsetParamsToSearch,
 } from "./postgrest-filters"
 import { postgrestRequest } from "./postgrest-request"
+import { isSynced } from "./realtime"
 
 export const subsetOptionsToQueryKey = (
   tableName: string,
@@ -115,7 +116,7 @@ export const supabaseOnDelete = async (
       // it to the collection — unless Realtime already echoed the delete, in
       // which case the synced row is gone and writing again would throw.
       const key = collection.getKeyFromItem(mutation.original)
-      if (collection._state.syncedData.has(key)) {
+      if (isSynced(collection, key)) {
         collection.utils.writeDelete(key)
       }
     })

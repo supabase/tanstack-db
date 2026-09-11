@@ -60,8 +60,6 @@ interface TableEntry {
   realtimePendingChannel: ReturnType<SupabaseClient["channel"]> | null
   /** Serialized set of Realtime filters {@link realtimePendingChannel} is subscribing with */
   realtimePendingFiltersKey: string | null
-  /** Resolves once the pending channel finished subscribing (or gave up) */
-  realtimeSubscribed: Promise<void> | null
   /**
    * Whether WHERE clauses are pushed to Realtime as server-side filters. When
    * `false`, the table always subscribes with a catch-all and filters
@@ -77,10 +75,9 @@ interface TableEntry {
 }
 
 /** A subscription that receives every change for the table. */
-const CATCH_ALL_FILTERS = [new URLSearchParams()]
-const realtimeFiltersKey = (filters: URLSearchParams[]) =>
-  JSON.stringify(filters.map((filter) => Array.from(filter)))
-const CATCH_ALL_FILTERS_KEY = realtimeFiltersKey(CATCH_ALL_FILTERS)
+const CATCH_ALL_FILTERS = new URLSearchParams()
+/** The registry key of the catch-all: an empty filter set serializes to "". */
+const CATCH_ALL_KEY = ""
 
 /**
  * Channel topics are namespaced and numbered because `supabase.channel()`
@@ -117,13 +114,14 @@ const nextChannelTopic = (tableName: string) => {
  * working it is kept, otherwise the errored channel is retained so realtime-js
  * reconnects it instead of leaving the table with no subscription at all.
  */
-const subscribeToChanges = (
+function subscribeToChanges(
+  queryClient: QueryClient,
   entry: TableEntry,
   tableName: string,
   collection: Collection<any, any>,
-  filters: URLSearchParams[],
+  filters: URLSearchParams,
   filtersKey: string
-) => {
+) {
   const previousChannel = entry.realtimeChannel
   const previousFiltersKey = entry.realtimeFiltersKey
 
@@ -142,19 +140,9 @@ const subscribeToChanges = (
     collection,
     filters
   )
-  if (!subscription) {
-    if (previousChannel) {
-      entry.supabase.removeChannel(previousChannel)
-    }
-    entry.realtimeChannel = null
-    entry.realtimeFiltersKey = null
-    entry.realtimeSubscribed = null
-    return
-  }
 
   entry.realtimePendingChannel = subscription.channel
   entry.realtimePendingFiltersKey = filtersKey
-  entry.realtimeSubscribed = subscription.ready
 
   // True once a newer swap (or a teardown) has taken over this pending channel.
   const superseded = () => entry.realtimePendingChannel !== subscription.channel
@@ -179,20 +167,14 @@ const subscribeToChanges = (
     }
     entry.realtimePendingChannel = null
     entry.realtimePendingFiltersKey = null
-    entry.realtimeSubscribed = null
 
-    if (filtersKey !== CATCH_ALL_FILTERS_KEY) {
+    if (filtersKey !== CATCH_ALL_KEY) {
       // A filtered subscription the server refused: drop it, remember it, and
-      // fall back to a catch-all while the previous channel keeps working.
+      // let syncTableSubscription pick the catch-all it now maps to — the same
+      // decision the observer makes — while the previous channel keeps working.
       entry.supabase.removeChannel(subscription.channel)
       entry.rejectedFilterKeys.add(filtersKey)
-      subscribeToChanges(
-        entry,
-        tableName,
-        collection,
-        CATCH_ALL_FILTERS,
-        CATCH_ALL_FILTERS_KEY
-      )
+      syncTableSubscription(queryClient, tableName, entry)
       return
     }
 
@@ -225,7 +207,6 @@ const subscribeToChanges = (
     entry.realtimeFiltersKey = previousFiltersKey
     entry.realtimePendingChannel = null
     entry.realtimePendingFiltersKey = null
-    entry.realtimeSubscribed = null
   }
 
   subscription.outcome.then((status) => {
@@ -242,6 +223,83 @@ const subscribeToChanges = (
 // Per-QueryClient registry of table entries, with a single cache subscription per client
 const queryClientRegistries = new Map<QueryClient, Map<string, TableEntry>>()
 
+/**
+ * Reconcile one table's Realtime subscription with its active queries: tear the
+ * channel down when there are none, otherwise derive the filters and (re)open a
+ * channel unless the current (or in-flight) one already matches. This is the
+ * single place that maps active queries to filters, so both the cache observer
+ * and the rejection fallback route through it.
+ */
+function syncTableSubscription(
+  queryClient: QueryClient,
+  tableName: string,
+  entry: TableEntry
+) {
+  const queries = queryClient.getQueryCache().findAll({
+    queryKey: [tableName],
+    type: "active",
+  })
+
+  // No active queries: tear down any existing subscription, including a swap
+  // still in flight, so neither the joined nor the pending channel leaks.
+  if (queries.length === 0) {
+    if (entry.realtimeChannel) {
+      entry.supabase.removeChannel(entry.realtimeChannel)
+    }
+    if (entry.realtimePendingChannel) {
+      entry.supabase.removeChannel(entry.realtimePendingChannel)
+    }
+    entry.realtimeChannel = null
+    entry.realtimeFiltersKey = null
+    entry.realtimePendingChannel = null
+    entry.realtimePendingFiltersKey = null
+    return
+  }
+
+  if (!entry.collectionRef) {
+    return
+  }
+
+  // Derive the Realtime filters from the WHERE clause of every active query so
+  // the subscription only receives changes that those queries care about. When
+  // server-side filtering is disabled, skip that and subscribe to every change.
+  let filters = CATCH_ALL_FILTERS
+  let filtersKey = CATCH_ALL_KEY
+  if (entry.realtimeUseFilter) {
+    const whereExpressions = queries.map(
+      (query) => query.meta?.loadSubsetOptions?.where
+    )
+    filters = realtimeFiltersToSearch(whereExpressions)
+    filtersKey = filters.toString()
+    if (entry.rejectedFilterKeys.has(filtersKey)) {
+      filters = CATCH_ALL_FILTERS
+      filtersKey = CATCH_ALL_KEY
+    }
+  }
+
+  // Reuse the existing subscription when the set of filters hasn't changed.
+  // While a swap is in flight the pending channel already targets the new
+  // filters, so compare against it to avoid firing the same swap twice.
+  const currentFiltersKey = entry.realtimePendingChannel
+    ? entry.realtimePendingFiltersKey
+    : entry.realtimeFiltersKey
+  if (
+    (entry.realtimeChannel || entry.realtimePendingChannel) &&
+    currentFiltersKey === filtersKey
+  ) {
+    return
+  }
+
+  subscribeToChanges(
+    queryClient,
+    entry,
+    tableName,
+    entry.collectionRef,
+    filters,
+    filtersKey
+  )
+}
+
 const ensureQueryCacheSubscription = (queryClient: QueryClient) => {
   if (queryClientRegistries.has(queryClient)) {
     return
@@ -255,71 +313,7 @@ const ensureQueryCacheSubscription = (queryClient: QueryClient) => {
       return
     }
     for (const [tableName, entry] of tables) {
-      const queries = queryClient.getQueryCache().findAll({
-        queryKey: [tableName],
-        type: "active",
-      })
-
-      // No active queries: tear down any existing subscription, including a swap
-      // still in flight, so neither the joined nor the pending channel leaks.
-      if (queries.length === 0) {
-        if (entry.realtimeChannel) {
-          entry.supabase.removeChannel(entry.realtimeChannel)
-        }
-        if (entry.realtimePendingChannel) {
-          entry.supabase.removeChannel(entry.realtimePendingChannel)
-        }
-        entry.realtimeChannel = null
-        entry.realtimeFiltersKey = null
-        entry.realtimePendingChannel = null
-        entry.realtimePendingFiltersKey = null
-        entry.realtimeSubscribed = null
-        continue
-      }
-
-      if (!entry.collectionRef) {
-        continue
-      }
-
-      // Derive the Realtime filters from the WHERE clause of every active query
-      // so the subscription only receives changes that those queries care about.
-      // When server-side filtering is disabled, skip that entirely and subscribe
-      // to every change on the table instead.
-      let filters = CATCH_ALL_FILTERS
-      let filtersKey = CATCH_ALL_FILTERS_KEY
-      if (entry.realtimeUseFilter) {
-        const whereExpressions = queries.map(
-          (query) => query.meta?.loadSubsetOptions?.where
-        )
-        filters = realtimeFiltersToSearch(whereExpressions)
-        filtersKey = realtimeFiltersKey(filters)
-        if (entry.rejectedFilterKeys.has(filtersKey)) {
-          filters = CATCH_ALL_FILTERS
-          filtersKey = CATCH_ALL_FILTERS_KEY
-        }
-      }
-
-      // Reuse the existing subscription when the set of filters hasn't changed.
-      // While a swap is in flight the pending channel already targets the new
-      // filters, so compare against it to avoid firing the same swap twice.
-      const currentFiltersKey = entry.realtimePendingChannel
-        ? entry.realtimePendingFiltersKey
-        : entry.realtimeFiltersKey
-      if (
-        (entry.realtimeChannel || entry.realtimePendingChannel) &&
-        currentFiltersKey === filtersKey
-      ) {
-        continue
-      }
-
-      // Filters changed (or no channel yet): subscribe with the new filters.
-      subscribeToChanges(
-        entry,
-        tableName,
-        entry.collectionRef,
-        filters,
-        filtersKey
-      )
+      syncTableSubscription(queryClient, tableName, entry)
     }
   })
 }
@@ -342,7 +336,6 @@ const registerTable = (
       realtimeFiltersKey: null,
       realtimePendingChannel: null,
       realtimePendingFiltersKey: null,
-      realtimeSubscribed: null,
       rejectedFilterKeys: new Set(),
       realtimeUseFilter,
     })
@@ -375,8 +368,11 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
   // Key columns used to match rows on update and delete.
   const keyColumns = keys as string[]
 
+  // A server-side Supabase client has no `channel`, so Realtime is a no-op there
+  // and the table is never registered. Checking here keeps attachSupabaseListeners
+  // able to always return a live subscription.
   let entry: TableEntry | null = null
-  if (realtime) {
+  if (realtime && typeof supabase.channel === "function") {
     entry = registerTable(queryClient, tableName, supabase, realtimeUseFilter)
   }
   const config = queryCollectionOptions({
@@ -386,16 +382,14 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
     schema,
     queryKey: (ctx) => subsetOptionsToQueryKey(tableName, ctx),
     syncMode: "on-demand",
-    queryFn: async (ctx) => {
-      // Known limitation: the initial fetch does not wait for the Realtime
-      // channel to finish subscribing. A row written in the window between this
-      // fetch and the subscription going live can be missed by both — the fetch
-      // ran before the row existed, and the subscription started after the
-      // change was published. Gating the fetch on `entry.realtimeSubscribed`
-      // closes this gap but couples every first load to Realtime connect
-      // latency, so it is intentionally left out and tracked separately.
-      return await supabaseQueryFn(supabase, tableName, ctx)
-    },
+    // Known limitation: the initial fetch does not wait for the Realtime channel
+    // to finish subscribing. A row written in the window between this fetch and
+    // the subscription going live can be missed by both — the fetch ran before
+    // the row existed, and the subscription started after the change was
+    // published. Gating the fetch on the subscription closes this gap but couples
+    // every first load to Realtime connect latency, so it is intentionally left
+    // out and tracked separately.
+    queryFn: (ctx) => supabaseQueryFn(supabase, tableName, ctx),
     onInsert: (ctx) => supabaseOnInsert(supabase, tableName, ctx),
     onUpdate: (ctx) => supabaseOnUpdate(supabase, tableName, keyColumns, ctx),
     onDelete: (ctx) => supabaseOnDelete(supabase, tableName, keyColumns, ctx),

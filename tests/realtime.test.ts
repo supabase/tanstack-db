@@ -153,14 +153,14 @@ describe("realtime filter propagation", () => {
       expect(insertFilters(mockChannel)).toEqual(["id=in.(1,2,3)"])
     })
 
-    test("not(eq) maps to neq", async () => {
+    test("not(eq) maps to not.eq", async () => {
       const { mockChannel } = await captureChannel(
         (collection) => (q) =>
           q
             .from({ user: collection })
             .where(({ user }) => not(eq(user.active, false)))
       )
-      expect(insertFilters(mockChannel)).toEqual(["active=neq.false"])
+      expect(insertFilters(mockChannel)).toEqual(["active=not.eq.false"])
     })
 
     test("isNull maps to is.null", async () => {
@@ -767,13 +767,14 @@ describe("realtime filter propagation", () => {
 
   // `or(...)` (and other unsupported expressions) cannot be driven through the
   // live-query path because the query's own supabaseQueryFn calls the same
-  // throwing extractSimpleComparisons. Cover the defensive fallback directly.
+  // strict toPostgrestParams, which throws on an unpushable expression. Cover the
+  // defensive fallback directly.
   describe("realtimeFiltersToSearch falls back instead of throwing", () => {
     test("an unsupported expression yields a catch-all", () => {
       const orExpression = { type: "func", name: "or", args: [] } as any
-      expect(realtimeFiltersToSearch([orExpression])).toEqual([
-        new URLSearchParams(),
-      ])
+      expect(realtimeFiltersToSearch([orExpression])).toEqual(
+        new URLSearchParams()
+      )
     })
   })
 })
