@@ -296,13 +296,13 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
     queryKey: (ctx) => subsetOptionsToQueryKey(tableName, ctx),
     syncMode: "on-demand",
     queryFn: async (ctx) => {
-      // The channel is attached when the query's observer is added, which
-      // happens before this runs. Waiting for it means a row written between
-      // the fetch and the subscription arrives over Realtime instead of being
-      // missed by both.
-      if (entry?.realtimeSubscribed) {
-        await entry.realtimeSubscribed
-      }
+      // Known limitation: the initial fetch does not wait for the Realtime
+      // channel to finish subscribing. A row written in the window between this
+      // fetch and the subscription going live can be missed by both — the fetch
+      // ran before the row existed, and the subscription started after the
+      // change was published. Gating the fetch on `entry.realtimeSubscribed`
+      // closes this gap but couples every first load to Realtime connect
+      // latency, so it is intentionally left out and tracked separately.
       return await supabaseQueryFn(supabase, tableName, ctx)
     },
     onInsert: (ctx) => supabaseOnInsert(supabase, tableName, ctx),
