@@ -4,6 +4,7 @@ import { createCollection, createLiveQueryCollection } from "@tanstack/db"
 import { QueryClient } from "@tanstack/query-core"
 import { test as baseTest, expect, inject, vi } from "vitest"
 import { supabaseCollectionOptions } from "../../src/index"
+import { realtimeChannelTopicPrefix } from "../../src/realtime"
 import { usersSchema } from "../test.utils"
 
 // Shared polling window for awaiting async PostgREST/realtime propagation.
@@ -16,7 +17,10 @@ const makeSupabase = (): SupabaseClient =>
 // Each collection gets its own QueryClient: the realtime channel registry in
 // src/db.ts is keyed by QueryClient, so a fresh one per collection prevents
 // channels leaking across tests.
-const makeUsersCollection = ({ realtime = false } = {}) => {
+const makeUsersCollection = ({
+  realtime = false,
+  realtimeUseFilter = false,
+} = {}) => {
   const supabase = makeSupabase()
   const collection = createCollection(
     supabaseCollectionOptions({
@@ -26,10 +30,16 @@ const makeUsersCollection = ({ realtime = false } = {}) => {
       supabase,
       queryClient: new QueryClient(),
       realtime,
+      realtimeUseFilter,
     })
   )
   return { collection, supabase }
 }
+
+// A realtime collection that pushes each live query's WHERE down to the
+// server-side postgres_changes filter (see realtimeUseFilter in src/db.ts).
+export const makeFilteredRealtimeUsers = () =>
+  makeUsersCollection({ realtime: true, realtimeUseFilter: true })
 
 type UsersContext = ReturnType<typeof makeUsersCollection>
 type UsersCollection = UsersContext["collection"]
@@ -48,17 +58,44 @@ const liveUsers = (base: UsersCollection) =>
 
 type LiveUsersCollection = ReturnType<typeof liveUsers>
 
-// Waits until the adapter's realtime channel for the table is actually joined,
-// so changes written afterwards are guaranteed to be captured. Coupled to the
-// adapter naming its channel after the table (supabase.channel(tableName) in
-// src/db.ts), which supabase-js exposes under the "realtime:" topic prefix.
-const waitForChannel = (supabase: SupabaseClient, table: string) =>
+// Waits until one of the adapter's realtime channels for the table is actually
+// joined, so changes written afterwards are guaranteed to be captured. The
+// adapter numbers its channel topics (see realtimeChannelTopicPrefix in
+// src/db.ts), and supabase-js exposes them under its own "realtime:" prefix.
+export const waitForChannel = (supabase: SupabaseClient, table: string) =>
   vi.waitFor(() => {
-    const channel = supabase
+    const prefix = `realtime:${realtimeChannelTopicPrefix(table)}`
+    const joined = supabase
       .getChannels()
-      .find((c) => c.topic === `realtime:${table}`)
-    expect(channel?.state).toBe("joined")
+      .some((c) => c.topic.startsWith(prefix) && c.state === "joined")
+    expect(joined).toBe(true)
   }, WAIT)
+
+// A live query and its base collection both expose these; the helper below only
+// needs to drive their lifecycle, not their query shape.
+type Preloadable = {
+  preload: () => Promise<unknown>
+  cleanup: () => Promise<unknown>
+}
+
+// Preloads one or more filtered realtime live queries over a shared collection
+// and blocks until the channel has actually joined — which only happens once the
+// server accepted the filters these queries emit, so it doubles as proof the
+// emitted filter syntax is valid. Returns a cleanup to await in the test's
+// `finally`, tearing down the live queries, the base collection, and the
+// client's channels.
+export const startFilteredRealtime = async (
+  ctx: UsersContext,
+  ...lives: Preloadable[]
+) => {
+  await Promise.all(lives.map((live) => live.preload()))
+  await waitForChannel(ctx.supabase, "users")
+  return async () => {
+    await Promise.all(lives.map((live) => live.cleanup()))
+    await ctx.collection.cleanup()
+    await ctx.supabase.removeAllChannels()
+  }
+}
 
 const preloadSeeded = async (live: LiveUsersCollection) => {
   await live.preload()

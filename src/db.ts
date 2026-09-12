@@ -12,6 +12,7 @@ import {
   supabaseQueryFn,
 } from "./functions"
 import { getQueryClient } from "./query-client"
+import { syncTableSubscription, type TableEntry } from "./realtime"
 
 interface SupabaseCollectionOptions<TSchema extends StandardSchemaV1> {
   /**
@@ -24,18 +25,20 @@ interface SupabaseCollectionOptions<TSchema extends StandardSchemaV1> {
   queryClient?: QueryClient
   /** Whether to receive updates when a record has been inserted, updated, or deleted by another user */
   realtime?: boolean
+  /**
+   * Whether to push each query's WHERE clause to the Realtime subscription as a
+   * server-side `postgres_changes` filter. Only applies when `realtime` is on.
+   * Defaults to `false`, which subscribes to every change on the table and
+   * filters client-side — simpler, at the cost of more Realtime traffic. Set to
+   * `true` to narrow the subscription server-side.
+   */
+  realtimeUseFilter?: boolean
   /** The schema of the collection */
   schema: TSchema
   /** The supabase browser client */
   supabase: SupabaseClient
   /** The name of the table in the database */
   tableName: string
-}
-
-interface TableEntry {
-  collectionRef: Collection<any, any> | null
-  realtimeChannel: ReturnType<SupabaseClient["channel"]> | null
-  supabase: SupabaseClient
 }
 
 // Per-QueryClient registry of table entries, with a single cache subscription per client
@@ -54,21 +57,7 @@ const ensureQueryCacheSubscription = (queryClient: QueryClient) => {
       return
     }
     for (const [tableName, entry] of tables) {
-      const queries = queryClient.getQueryCache().findAll({
-        queryKey: [tableName],
-        type: "active",
-      })
-
-      if (queries.length > 0 && !entry.realtimeChannel && entry.collectionRef) {
-        entry.realtimeChannel = attachSupabaseListeners(
-          entry.supabase,
-          tableName,
-          entry.collectionRef
-        )
-      } else if (queries.length === 0 && entry.realtimeChannel) {
-        entry.supabase.removeChannel(entry.realtimeChannel)
-        entry.realtimeChannel = null
-      }
+      syncTableSubscription(queryClient, tableName, entry)
     }
   })
 }
@@ -76,7 +65,8 @@ const ensureQueryCacheSubscription = (queryClient: QueryClient) => {
 const registerTable = (
   queryClient: QueryClient,
   tableName: string,
-  supabase: SupabaseClient
+  supabase: SupabaseClient,
+  realtimeUseFilter: boolean
 ): TableEntry => {
   ensureQueryCacheSubscription(queryClient)
   // biome-ignore lint/style/noNonNullAssertion: <explanation>
@@ -87,6 +77,11 @@ const registerTable = (
       supabase,
       collectionRef: null,
       realtimeChannel: null,
+      realtimeFiltersKey: null,
+      realtimePendingChannel: null,
+      realtimePendingFiltersKey: null,
+      rejectedFilterKeys: new Set(),
+      realtimeUseFilter,
     })
   }
 
@@ -101,6 +96,7 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
   queryClient,
   supabase,
   realtime,
+  realtimeUseFilter = false,
 }: SupabaseCollectionOptions<TSchema>) => {
   // if the query client is not provided, use the global query client
   queryClient = queryClient ?? getQueryClient()
@@ -116,9 +112,12 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
   // Key columns used to match rows on update and delete.
   const keyColumns = keys as string[]
 
+  // A server-side Supabase client has no `channel`, so Realtime is a no-op there
+  // and the table is never registered. Checking here keeps attachSupabaseListeners
+  // able to always return a live subscription.
   let entry: TableEntry | null = null
-  if (realtime) {
-    entry = registerTable(queryClient, tableName, supabase)
+  if (realtime && typeof supabase.channel === "function") {
+    entry = registerTable(queryClient, tableName, supabase, realtimeUseFilter)
   }
   const config = queryCollectionOptions({
     id: tableName,
@@ -127,6 +126,13 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
     schema,
     queryKey: (ctx) => subsetOptionsToQueryKey(tableName, ctx),
     syncMode: "on-demand",
+    // Known limitation: the initial fetch does not wait for the Realtime channel
+    // to finish subscribing. A row written in the window between this fetch and
+    // the subscription going live can be missed by both — the fetch ran before
+    // the row existed, and the subscription started after the change was
+    // published. Gating the fetch on the subscription closes this gap but couples
+    // every first load to Realtime connect latency, so it is intentionally left
+    // out and tracked separately.
     queryFn: (ctx) => supabaseQueryFn(supabase, tableName, ctx),
     onInsert: (ctx) => supabaseOnInsert(supabase, tableName, ctx),
     onUpdate: (ctx) => supabaseOnUpdate(supabase, tableName, keyColumns, ctx),
@@ -150,43 +156,4 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
       },
     },
   }
-}
-
-export const attachSupabaseListeners = <
-  T extends object,
-  TKey extends string | number,
->(
-  supabase: SupabaseClient,
-  tableName: string,
-  collection: Collection<T, TKey>
-): ReturnType<SupabaseClient["channel"]> | null => {
-  if (!supabase.channel) {
-    console.log("Server supabase doesn't have a channel")
-    return null
-  }
-
-  const channel = supabase.channel(tableName)
-  channel
-    .on<T>(
-      "postgres_changes",
-      { event: "*", schema: "public", table: tableName },
-      (payload) => {
-        // Realtime events can replay or race the initial PostgREST fetch, so
-        // an "INSERT" may already be present and an "UPDATE" may not be yet.
-        // Upsert handles both directions without throwing.
-        if (payload.eventType === "INSERT") {
-          collection.utils.writeUpsert(payload.new)
-        } else if (payload.eventType === "UPDATE") {
-          collection.utils.writeUpsert(payload.new)
-        } else if (payload.eventType === "DELETE") {
-          const id = collection.getKeyFromItem(payload.old as T)
-          if (collection.has(id)) {
-            collection.utils.writeDelete(id)
-          }
-        }
-      }
-    )
-    .subscribe()
-
-  return channel
 }

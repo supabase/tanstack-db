@@ -7,6 +7,14 @@ export type PostgrestParam =
 
 interface FilterOptions {
   mergeIn?: boolean
+  /**
+   * Quote top-level scalar values (the Realtime path). PostgREST sends each
+   * comparison as its own `column=op.value` query param, so top-level scalars
+   * must stay raw; Realtime comma-joins conditions into a single `filter`, so
+   * top-level scalars must be quoted to keep reserved characters (commas,
+   * whitespace) from splitting a condition.
+   */
+  quoteScalars?: boolean
   strict?: boolean
   stripAlias?: boolean
 }
@@ -50,11 +58,18 @@ function flattenAnd(expr: Expression): Expression[] {
     : [expr]
 }
 
+// PostgREST interpolates filter values into the URL as-is, and
+// `Date.prototype.toString()` produces something Postgres cannot cast to a
+// timestamp. Rendering it as ISO 8601 keeps the server query in agreement with
+// the Realtime subscription, which serializes Dates the same way.
+export const toScalarString = (value: unknown): string =>
+  value instanceof Date ? value.toISOString() : `${value}`
+
 // Only lists and logical groups parse quoted values. Top-level scalar values
 // must remain raw: col=eq."x" would match the quotes themselves.
 const NEEDS_QUOTES = /^$|^\s|\s$|[,()"\\]/
 export const quoteValue = (value: unknown): string => {
-  const raw = `${value}`
+  const raw = toScalarString(value)
   return NEEDS_QUOTES.test(raw)
     ? `"${raw.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
     : raw
@@ -117,7 +132,7 @@ function renderComparison(
   return {
     column,
     operator: expr.name,
-    value: quoteScalars ? quoteValue(value) : `${value}`,
+    value: quoteScalars ? quoteValue(value) : toScalarString(value),
   }
 }
 
@@ -191,7 +206,11 @@ export function toPostgrestParams(
   const conjuncts = flattenAnd(expr)
   const filters = options.mergeIn ? mergeInFilters(conjuncts) : conjuncts
   return filters.flatMap((filter): PostgrestParam[] => {
-    const comparison = renderComparison(filter, false, options)
+    const comparison = renderComparison(
+      filter,
+      options.quoteScalars ?? false,
+      options
+    )
     if (comparison) return [{ kind: "column", ...comparison }]
     const embedded = toFilterString(filter, options)
     if (embedded !== null) {
