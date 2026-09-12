@@ -64,7 +64,9 @@ describe("queryOnce PostgREST query generation", () => {
   describe("FROM", () => {
     test("SELECT * FROM users", async () => {
       await queryOnce((q) => q.from({ user: usersCollection }), supabase)
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&order=id.asc&limit=1000",
+      ])
     })
   })
 
@@ -99,7 +101,9 @@ describe("queryOnce PostgREST query generation", () => {
             .where(({ user }) => eq(user.active, true)),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&active=eq.true"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&active=eq.true&order=id.asc&limit=1000",
+      ])
     })
 
     test("WHERE id = 1", async () => {
@@ -108,7 +112,9 @@ describe("queryOnce PostgREST query generation", () => {
           q.from({ user: usersCollection }).where(({ user }) => eq(user.id, 1)),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=eq.1"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&id=eq.1&order=id.asc&limit=1000",
+      ])
     })
 
     test("WHERE name = 'John'", async () => {
@@ -119,7 +125,9 @@ describe("queryOnce PostgREST query generation", () => {
             .where(({ user }) => eq(user.name, "John")),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&name=eq.John"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&name=eq.John&order=id.asc&limit=1000",
+      ])
     })
 
     test("WHERE id > 5 (gt)", async () => {
@@ -128,7 +136,9 @@ describe("queryOnce PostgREST query generation", () => {
           q.from({ user: usersCollection }).where(({ user }) => gt(user.id, 5)),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=gt.5"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&id=gt.5&order=id.asc&limit=1000",
+      ])
     })
 
     test("WHERE id >= 5 (gte)", async () => {
@@ -139,7 +149,9 @@ describe("queryOnce PostgREST query generation", () => {
             .where(({ user }) => gte(user.id, 5)),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=gte.5"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&id=gte.5&order=id.asc&limit=1000",
+      ])
     })
 
     test("WHERE id < 10 (lt)", async () => {
@@ -150,7 +162,9 @@ describe("queryOnce PostgREST query generation", () => {
             .where(({ user }) => lt(user.id, 10)),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=lt.10"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&id=lt.10&order=id.asc&limit=1000",
+      ])
     })
 
     test("WHERE id <= 10 (lte)", async () => {
@@ -161,7 +175,9 @@ describe("queryOnce PostgREST query generation", () => {
             .where(({ user }) => lte(user.id, 10)),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=lte.10"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&id=lte.10&order=id.asc&limit=1000",
+      ])
     })
 
     test("WHERE id IN (1, 2, 3)", async () => {
@@ -172,7 +188,9 @@ describe("queryOnce PostgREST query generation", () => {
             .where(({ user }) => inArray(user.id, [1, 2, 3])),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=in.(1,2,3)"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&id=in.(1,2,3)&order=id.asc&limit=1000",
+      ])
     })
 
     test("WHERE NOT(active = false)", async () => {
@@ -184,7 +202,7 @@ describe("queryOnce PostgREST query generation", () => {
         supabase
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&active=not.eq.false",
+        "/rest/v1/users?select=*&active=not.eq.false&order=id.asc&limit=1000",
       ])
     })
 
@@ -196,7 +214,9 @@ describe("queryOnce PostgREST query generation", () => {
             .where(({ user }) => isNull(user.name)),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&name=is.null"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&name=is.null&order=id.asc&limit=1000",
+      ])
     })
 
     test("AND: active = true AND id > 5", async () => {
@@ -208,7 +228,7 @@ describe("queryOnce PostgREST query generation", () => {
         supabase
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&active=eq.true&id=gt.5",
+        "/rest/v1/users?select=*&active=eq.true&id=gt.5&order=id.asc&limit=1000",
       ])
     })
 
@@ -222,7 +242,7 @@ describe("queryOnce PostgREST query generation", () => {
         supabase
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&active=eq.true&id=gt.5",
+        "/rest/v1/users?select=*&active=eq.true&id=gt.5&order=id.asc&limit=1000",
       ])
     })
 
@@ -235,7 +255,7 @@ describe("queryOnce PostgREST query generation", () => {
         supabase
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&or=(active.eq.true,id.eq.1)",
+        "/rest/v1/users?select=*&or=(active.eq.true,id.eq.1)&order=id.asc&limit=1000",
       ])
     })
 
@@ -253,7 +273,7 @@ describe("queryOnce PostgREST query generation", () => {
         supabase
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&active=eq.true&or=(id.gt.5,name.eq.admin)",
+        "/rest/v1/users?select=*&active=eq.true&or=(id.gt.5,name.eq.admin)&order=id.asc&limit=1000",
       ])
     })
   })
@@ -267,7 +287,9 @@ describe("queryOnce PostgREST query generation", () => {
             .select(({ user }) => ({ id: user.id, name: user.name })),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&order=id.asc&limit=1000",
+      ])
     })
 
     test("field renaming", async () => {
@@ -278,7 +300,9 @@ describe("queryOnce PostgREST query generation", () => {
             .select(({ user }) => ({ userId: user.id, fullName: user.name })),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&order=id.asc&limit=1000",
+      ])
     })
 
     test("computed boolean with eq falls back to *", async () => {
@@ -290,7 +314,9 @@ describe("queryOnce PostgREST query generation", () => {
           })),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&order=id.asc&limit=1000",
+      ])
     })
 
     test("upper(name) falls back to *", async () => {
@@ -302,7 +328,9 @@ describe("queryOnce PostgREST query generation", () => {
           })),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&order=id.asc&limit=1000",
+      ])
     })
 
     test("lower(email) falls back to *", async () => {
@@ -314,7 +342,9 @@ describe("queryOnce PostgREST query generation", () => {
           })),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&order=id.asc&limit=1000",
+      ])
     })
 
     test("concat falls back to *", async () => {
@@ -326,7 +356,9 @@ describe("queryOnce PostgREST query generation", () => {
           })),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&order=id.asc&limit=1000",
+      ])
     })
 
     test("length(name) falls back to *", async () => {
@@ -338,7 +370,9 @@ describe("queryOnce PostgREST query generation", () => {
           })),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&order=id.asc&limit=1000",
+      ])
     })
 
     test("add(id, 1) falls back to *", async () => {
@@ -350,7 +384,9 @@ describe("queryOnce PostgREST query generation", () => {
           })),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&order=id.asc&limit=1000",
+      ])
     })
 
     test("coalesce falls back to *", async () => {
@@ -362,7 +398,9 @@ describe("queryOnce PostgREST query generation", () => {
           })),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&order=id.asc&limit=1000",
+      ])
     })
 
     test("spread + computed field falls back to *", async () => {
@@ -374,7 +412,9 @@ describe("queryOnce PostgREST query generation", () => {
           })),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&order=id.asc&limit=1000",
+      ])
     })
   })
 
@@ -675,7 +715,9 @@ describe("queryOnce PostgREST query generation", () => {
           q.from({ user: usersCollection }).orderBy(({ user }) => user.name),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=name.asc"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&order=name.asc,id.asc&limit=1000",
+      ])
     })
 
     test("explicit asc", async () => {
@@ -686,7 +728,9 @@ describe("queryOnce PostgREST query generation", () => {
             .orderBy(({ user }) => user.name, "asc"),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=name.asc"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&order=name.asc,id.asc&limit=1000",
+      ])
     })
 
     test("descending", async () => {
@@ -697,7 +741,9 @@ describe("queryOnce PostgREST query generation", () => {
             .orderBy(({ user }) => user.name, "desc"),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=name.desc"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&order=name.desc,id.asc&limit=1000",
+      ])
     })
 
     test("multi-column orderBy", async () => {
@@ -710,7 +756,7 @@ describe("queryOnce PostgREST query generation", () => {
         supabase
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&order=name.asc,id.desc",
+        "/rest/v1/users?select=*&order=name.asc,id.desc&limit=1000",
       ])
     })
 
@@ -727,7 +773,9 @@ describe("queryOnce PostgREST query generation", () => {
             .orderBy(({ $selected }) => $selected.nameLength, "desc"),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&order=id.asc&limit=1000",
+      ])
     })
   })
 
@@ -772,7 +820,9 @@ describe("queryOnce PostgREST query generation", () => {
           .where(({ user }) => eq(user.active, true))
         return q.from({ activeUser: activeUsers })
       }, supabase)
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&active=eq.true"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&active=eq.true&order=id.asc&limit=1000",
+      ])
     })
   })
 
@@ -786,7 +836,9 @@ describe("queryOnce PostgREST query generation", () => {
             .findOne(),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=eq.1&limit=1"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&id=eq.1&limit=1&order=id.asc",
+      ])
     })
   })
 
@@ -800,7 +852,9 @@ describe("queryOnce PostgREST query generation", () => {
             .distinct(),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&order=id.asc&limit=1000",
+      ])
     })
 
     test("distinct with where clause", async () => {
@@ -813,7 +867,9 @@ describe("queryOnce PostgREST query generation", () => {
             .distinct(),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&active=eq.true"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&active=eq.true&order=id.asc&limit=1000",
+      ])
     })
   })
 
@@ -829,7 +885,7 @@ describe("queryOnce PostgREST query generation", () => {
         supabase
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&active=eq.true&order=name.asc&limit=10",
+        "/rest/v1/users?select=*&active=eq.true&order=name.asc,id.asc&limit=10",
       ])
     })
 
@@ -843,7 +899,7 @@ describe("queryOnce PostgREST query generation", () => {
         supabase
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&active=eq.true&order=name.desc",
+        "/rest/v1/users?select=*&active=eq.true&order=name.desc,id.asc&limit=1000",
       ])
     })
 
@@ -893,7 +949,7 @@ describe("queryOnce PostgREST query generation", () => {
         supabase
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?active=eq.true&limit=5&order=name.asc&select=*",
+        "/rest/v1/users?active=eq.true&limit=5&order=name.asc,id.asc&select=*",
       ])
     })
 
@@ -928,8 +984,8 @@ describe("queryOnce PostgREST query generation", () => {
         supabase
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users_todos?select=*",
-        "/rest/v1/users?id=in.(user_1)&select=*",
+        "/rest/v1/users_todos?select=*&order=user_id.asc,todo_id.asc&limit=1000",
+        "/rest/v1/users?id=in.(user_1)&select=*&order=id.asc&limit=1000",
       ])
     })
 
@@ -944,8 +1000,8 @@ describe("queryOnce PostgREST query generation", () => {
         supabase
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*",
-        "/rest/v1/users_todos?select=*&user_id=in.(user_1)",
+        "/rest/v1/users?select=*&order=id.asc&limit=1000",
+        "/rest/v1/users_todos?select=*&user_id=in.(user_1)&order=user_id.asc,todo_id.asc&limit=1000",
       ])
     })
 
@@ -960,8 +1016,8 @@ describe("queryOnce PostgREST query generation", () => {
         supabase
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users_todos?select=*",
-        "/rest/v1/users?id=in.(user_1)&select=*",
+        "/rest/v1/users_todos?select=*&order=user_id.asc,todo_id.asc&limit=1000",
+        "/rest/v1/users?id=in.(user_1)&select=*&order=id.asc&limit=1000",
       ])
     })
 
@@ -976,8 +1032,8 @@ describe("queryOnce PostgREST query generation", () => {
         supabase
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*",
-        "/rest/v1/users_todos?select=*",
+        "/rest/v1/users?select=*&order=id.asc&limit=1000",
+        "/rest/v1/users_todos?select=*&order=user_id.asc,todo_id.asc&limit=1000",
       ])
     })
 
@@ -994,8 +1050,8 @@ describe("queryOnce PostgREST query generation", () => {
         supabase
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users_todos?select=*",
-        "/rest/v1/users?id=in.(user_1)&select=*",
+        "/rest/v1/users_todos?select=*&order=user_id.asc,todo_id.asc&limit=1000",
+        "/rest/v1/users?id=in.(user_1)&select=*&order=id.asc&limit=1000",
       ])
     })
 
@@ -1011,8 +1067,8 @@ describe("queryOnce PostgREST query generation", () => {
         supabase
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*",
-        "/rest/v1/users_todos?select=*&user_id=in.(user_1)",
+        "/rest/v1/users?select=*&order=id.asc&limit=1000",
+        "/rest/v1/users_todos?select=*&user_id=in.(user_1)&order=user_id.asc,todo_id.asc&limit=1000",
       ])
     })
 
@@ -1030,9 +1086,9 @@ describe("queryOnce PostgREST query generation", () => {
         supabase
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*",
-        "/rest/v1/users_todos?select=*&user_id=in.(user_1)",
-        "/rest/v1/todos?id=in.(todo_1)&select=*",
+        "/rest/v1/users?select=*&order=id.asc&limit=1000",
+        "/rest/v1/users_todos?select=*&user_id=in.(user_1)&order=user_id.asc,todo_id.asc&limit=1000",
+        "/rest/v1/todos?id=in.(todo_1)&select=*&order=id.asc&limit=1000",
       ])
     })
 
@@ -1048,8 +1104,8 @@ describe("queryOnce PostgREST query generation", () => {
         supabase
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?active=eq.true&select=*",
-        "/rest/v1/users_todos?select=*&user_id=in.(user_1)",
+        "/rest/v1/users?active=eq.true&select=*&order=id.asc&limit=1000",
+        "/rest/v1/users_todos?select=*&user_id=in.(user_1)&order=user_id.asc,todo_id.asc&limit=1000",
       ])
     })
 
@@ -1073,9 +1129,9 @@ describe("queryOnce PostgREST query generation", () => {
         supabase
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?order=name.asc&select=*",
-        "/rest/v1/users_todos?select=*&user_id=in.(user_1)",
-        "/rest/v1/todos?id=in.(todo_1)&select=*",
+        "/rest/v1/users?order=name.asc,id.asc&select=*&limit=1000",
+        "/rest/v1/users_todos?select=*&user_id=in.(user_1)&order=user_id.asc,todo_id.asc&limit=1000",
+        "/rest/v1/todos?id=in.(todo_1)&select=*&order=id.asc&limit=1000",
       ])
     })
 
@@ -1091,8 +1147,8 @@ describe("queryOnce PostgREST query generation", () => {
           )
       }, supabase)
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*",
-        "/rest/v1/users_todos?select=*&todo_id=gt.0&user_id=in.(user_1)",
+        "/rest/v1/users?select=*&order=id.asc&limit=1000",
+        "/rest/v1/users_todos?select=*&todo_id=gt.0&user_id=in.(user_1)&order=user_id.asc,todo_id.asc&limit=1000",
       ])
     })
   })

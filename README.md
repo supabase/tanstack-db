@@ -144,6 +144,9 @@ Collection reads automatically request additional PostgREST ranges when a
 query matches more rows than fit in one response. Filters, ordering, explicit
 limits, offsets, and cursor filters are applied to every page. A failure on any
 page fails the complete collection load instead of returning partial data.
+Requests use the configured `keys` as the default sort order, or append missing
+key columns as tie-breakers after an explicit sort, to keep pagination stable.
+Every request, including the first, is limited to at most `pageSize` rows.
 
 The default `pageSize` is `1000`, matching the default Supabase API row limit.
 If your project's API settings use a lower limit, configure `pageSize` to the

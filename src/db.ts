@@ -137,7 +137,8 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
     // published. Gating the fetch on the subscription closes this gap but couples
     // every first load to Realtime connect latency, so it is intentionally left
     // out and tracked separately.
-    queryFn: (ctx) => supabaseQueryFn(supabase, tableName, ctx, pageSize),
+    queryFn: (ctx) =>
+      supabaseQueryFn(supabase, tableName, keyColumns, ctx, pageSize),
     onInsert: (ctx) => supabaseOnInsert(supabase, tableName, ctx),
     onUpdate: (ctx) => supabaseOnUpdate(supabase, tableName, keyColumns, ctx),
     onDelete: (ctx) => supabaseOnDelete(supabase, tableName, keyColumns, ctx),

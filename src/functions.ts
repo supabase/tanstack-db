@@ -3,6 +3,7 @@ import {
   type DeleteMutationFnParams,
   type InsertMutationFnParams,
   type LoadSubsetOptions,
+  parseOrderByExpression,
   type UpdateMutationFnParams,
 } from "@tanstack/db"
 import type { QueryClient, QueryMeta } from "@tanstack/query-core"
@@ -11,6 +12,7 @@ import {
   loadSubsetOptionsToSearch,
   subsetParamsToSearch,
 } from "./postgrest-filters"
+import { appendOrder } from "./postgrest-filters/common"
 import { postgrestRequest } from "./postgrest-request"
 import { isSynced } from "./realtime"
 
@@ -23,7 +25,8 @@ export const subsetOptionsToQueryKey = (
   // The key shares the request URL's where/order/limit encoding
   // (`subsetParamsToSearch`) so the two cannot drift. Pagination params
   // (cursor/offset) and the constant `select` are intentionally excluded:
-  // pages of one subset must share a cache key.
+  // pages of one subset must share a cache key. The collection's fixed key
+  // columns are added as request-order tie-breakers, not subset identity.
   const key = subsetParamsToSearch(ctx).toString()
   return key ? [tableName, key] : [tableName]
 }
@@ -31,6 +34,7 @@ export const subsetOptionsToQueryKey = (
 export const supabaseQueryFn = async (
   supabase: SupabaseClient,
   tableName: string,
+  keys: string[],
   ctx: {
     client: QueryClient
     queryKey: readonly unknown[]
@@ -51,24 +55,29 @@ export const supabaseQueryFn = async (
     return []
   }
 
+  const search = loadSubsetOptionsToSearch(options)
+  const sorts = parseOrderByExpression(options.orderBy).map((sort) => ({
+    column: sort.field.join("."),
+    ascending: sort.direction === "asc",
+  }))
+  // Offset pagination needs a unique order even when the caller omits a sort
+  // or sorts by a non-unique column. Preserve explicit key sort directions.
+  for (const key of keys) {
+    if (!sorts.some((sort) => sort.column === key)) {
+      sorts.push({ column: key, ascending: true })
+    }
+  }
+  appendOrder(search, sorts)
+
   const rows: any[] = []
   let pageOffset = offset ?? 0
 
   while (limit === undefined || rows.length < limit) {
     const remaining = limit === undefined ? pageSize : limit - rows.length
     const currentPageSize = Math.min(pageSize, remaining)
-    const search = loadSubsetOptionsToSearch(options)
-
-    // Keep the first default-sized request unchanged for compatibility with
-    // existing clients. Supabase's default API row cap is 1,000, so a full
-    // response signals that another range should be fetched.
-    const isDefaultInitialPage =
-      pageOffset === 0 && limit === undefined && pageSize === DEFAULT_PAGE_SIZE
-    if (!isDefaultInitialPage) {
-      search.set("limit", String(currentPageSize))
-      if (pageOffset !== 0) {
-        search.set("offset", String(pageOffset))
-      }
+    search.set("limit", String(currentPageSize))
+    if (pageOffset !== 0) {
+      search.set("offset", String(pageOffset))
     }
 
     const data = await postgrestRequest(supabase, tableName, {

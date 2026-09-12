@@ -1,15 +1,8 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
-import type { BaseQueryBuilder, IR } from "@tanstack/db"
-import { eq, Query } from "@tanstack/db"
+import { eq, IR, type LoadSubsetOptions } from "@tanstack/db"
 import { describe, expect, test, vi } from "vitest"
 import { supabaseQueryFn } from "../src/functions"
-import {
-  createMockedUsersCollection,
-  createMockFetch,
-  normalizeFetchUrl,
-  SUPABASE_KEY,
-  SUPABASE_URL,
-} from "./test.utils"
+import { normalizeFetchUrl, SUPABASE_KEY, SUPABASE_URL } from "./test.utils"
 
 interface TestRow {
   active: boolean
@@ -66,40 +59,90 @@ const createPagedFetch = (
 
 const runQuery = (
   supabase: SupabaseClient,
-  loadSubsetOptions: Record<string, unknown> = {},
-  pageSize?: number
+  loadSubsetOptions: LoadSubsetOptions = {},
+  pageSize?: number,
+  keys = ["id"]
 ) =>
   supabaseQueryFn(
     supabase,
     "users",
+    keys,
     {
       client: {} as never,
       queryKey: ["users"],
       signal: new AbortController().signal,
-      meta: { loadSubsetOptions } as never,
+      meta: { loadSubsetOptions },
     },
     pageSize
   )
 
-const queryOptions = (): {
-  orderBy: unknown
-  where: IR.BasicExpression<boolean>
-} => {
-  const collection = createMockedUsersCollection(createMockFetch())
-  const query = new Query()
-    .from({ user: collection })
-    .where(({ user }) => eq(user.active, true))
-    .orderBy(({ user }) => user.id)
-  const built = (query as unknown as BaseQueryBuilder)._getQuery()
-  collection.cleanup()
+const sort = (column: string, direction: "asc" | "desc" = "asc") => ({
+  expression: new IR.PropRef([column]),
+  compareOptions: { direction, nulls: "last" as const },
+})
 
-  return {
-    orderBy: built.orderBy,
-    where: built.where?.[0] as IR.BasicExpression<boolean>,
-  }
-}
+const queryOptions = (): LoadSubsetOptions => ({
+  orderBy: [sort("id")],
+  where: eq(new IR.PropRef<boolean>(["active"]), true),
+})
 
 describe("collection query pagination", () => {
+  test("does not duplicate rows when the server cap exceeds pageSize", async () => {
+    const expected = makeRows(3501)
+    const mockFetch = createPagedFetch(expected, { maxRows: 2000 })
+    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      global: { fetch: mockFetch },
+    })
+
+    const rows = await runQuery(supabase)
+
+    expect(rows).toEqual(expected)
+    expect(mockFetch).toHaveBeenCalledTimes(4)
+    for (const [url] of mockFetch.mock.calls) {
+      expect(new URL(String(url)).searchParams.get("limit")).toBe("1000")
+    }
+  })
+
+  test.each([
+    { keys: ["id"], orderBy: undefined, expected: "id.asc" },
+    {
+      keys: ["id"],
+      orderBy: [sort("active", "desc")],
+      expected: "active.desc,id.asc",
+    },
+    {
+      keys: ["id"],
+      orderBy: [sort("active"), sort("id", "desc")],
+      expected: "active.asc,id.desc",
+    },
+    {
+      keys: ["email", "id"],
+      orderBy: undefined,
+      expected: "email.asc,id.asc",
+    },
+    {
+      keys: ["email", "id"],
+      orderBy: [sort("email", "desc")],
+      expected: "email.desc,id.asc",
+    },
+  ])("uses unique ordering $expected on every page", async ({
+    keys,
+    orderBy,
+    expected,
+  }) => {
+    const mockFetch = createPagedFetch(makeRows(5), { maxRows: 2 })
+    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      global: { fetch: mockFetch },
+    })
+
+    await runQuery(supabase, { orderBy }, 2, keys)
+
+    expect(mockFetch).toHaveBeenCalledTimes(3)
+    for (const [url] of mockFetch.mock.calls) {
+      expect(new URL(String(url)).searchParams.get("order")).toBe(expected)
+    }
+  })
+
   test("fetches all rows across multiple PostgREST pages", async () => {
     const mockFetch = createPagedFetch(makeRows(2501))
     const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -111,9 +154,9 @@ describe("collection query pagination", () => {
     expect(rows).toHaveLength(2501)
     expect(mockFetch.mock.calls.map(([url]) => normalizeFetchUrl(url))).toEqual(
       [
-        "/rest/v1/users?select=*",
-        "/rest/v1/users?limit=1000&offset=1000&select=*",
-        "/rest/v1/users?limit=1000&offset=2000&select=*",
+        "/rest/v1/users?limit=1000&order=id.asc&select=*",
+        "/rest/v1/users?limit=1000&offset=1000&order=id.asc&select=*",
+        "/rest/v1/users?limit=1000&offset=2000&order=id.asc&select=*",
       ]
     )
   })
@@ -133,9 +176,9 @@ describe("collection query pagination", () => {
     expect(rows.map(({ id }) => id)).toEqual([3, 4, 5, 6, 7])
     expect(mockFetch.mock.calls.map(([url]) => normalizeFetchUrl(url))).toEqual(
       [
-        "/rest/v1/users?limit=2&offset=3&order=user.id.asc&select=*&user.active=eq.true",
-        "/rest/v1/users?limit=2&offset=5&order=user.id.asc&select=*&user.active=eq.true",
-        "/rest/v1/users?limit=1&offset=7&order=user.id.asc&select=*&user.active=eq.true",
+        "/rest/v1/users?active=eq.true&limit=2&offset=3&order=id.asc&select=*",
+        "/rest/v1/users?active=eq.true&limit=2&offset=5&order=id.asc&select=*",
+        "/rest/v1/users?active=eq.true&limit=1&offset=7&order=id.asc&select=*",
       ]
     )
   })
