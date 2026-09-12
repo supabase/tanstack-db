@@ -6,6 +6,8 @@ import {
   type SupabaseClient,
 } from "@supabase/supabase-js"
 import { type Collection } from "@tanstack/db"
+import type { QueryClient } from "@tanstack/query-core"
+import { realtimeFiltersToSearch } from "./postgrest-filters"
 
 type ChangeEvent = "INSERT" | "UPDATE" | "DELETE"
 
@@ -157,4 +159,262 @@ export const attachSupabaseListeners = <
   })
 
   return { channel, outcome }
+}
+
+/**
+ * A table's Realtime channel lifecycle state, held by the registry in
+ * {@link ./db}. The joined channel and any in-flight swap are tracked
+ * separately so a replacement can be superseded or torn down without losing the
+ * channel that is still delivering changes.
+ */
+export interface TableEntry {
+  collectionRef: Collection<any, any> | null
+  /** The joined channel currently delivering changes (null when none). */
+  realtimeChannel: ReturnType<SupabaseClient["channel"]> | null
+  /** Serialized set of Realtime filters the current channel was subscribed with */
+  realtimeFiltersKey: string | null
+  /**
+   * A replacement channel that is still subscribing and has not joined yet. It
+   * is tracked separately from {@link realtimeChannel} so an in-flight swap can
+   * be superseded or torn down without losing the channel that is still
+   * delivering changes.
+   */
+  realtimePendingChannel: ReturnType<SupabaseClient["channel"]> | null
+  /** Serialized set of Realtime filters {@link realtimePendingChannel} is subscribing with */
+  realtimePendingFiltersKey: string | null
+  /**
+   * Whether WHERE clauses are pushed to Realtime as server-side filters. When
+   * `false`, the table always subscribes with a catch-all and filters
+   * client-side.
+   */
+  realtimeUseFilter: boolean
+  /**
+   * Filter sets the server has rejected. They are replaced by a catch-all
+   * subscription instead of being retried on every observer change.
+   */
+  rejectedFilterKeys: Set<string>
+  supabase: SupabaseClient
+}
+
+/** A subscription that receives every change for the table. */
+const CATCH_ALL_FILTERS = new URLSearchParams()
+/** The registry key of the catch-all: an empty filter set serializes to "". */
+const CATCH_ALL_KEY = ""
+
+/**
+ * Channel topics are namespaced and numbered because `supabase.channel()`
+ * returns the *existing* channel for a topic that is already registered, and
+ * subscribing to an already-joined channel throws. Reusing the table name would
+ * hand back the channel currently being torn down, and could collide with a
+ * channel the application opened itself or with another QueryClient sharing the
+ * same Supabase client — so the counter is module-level, not per table.
+ */
+let channelCount = 0
+
+/**
+ * Every channel this adapter opens for `tableName` has a topic starting with
+ * this prefix (supabase-js exposes it under its own `realtime:` prefix).
+ */
+export const realtimeChannelTopicPrefix = (tableName: string) =>
+  `supabase-tanstack-db:${tableName}:`
+
+const nextChannelTopic = (tableName: string) => {
+  channelCount += 1
+  return `${realtimeChannelTopicPrefix(tableName)}${channelCount}`
+}
+
+/**
+ * Opens a channel for `filters` as the table's *pending* channel. The joined
+ * channel keeps listening until the replacement actually joins, so no change
+ * slips through while the swap is in flight; only then is the predecessor
+ * removed. A swap already in flight is superseded (and torn down) first.
+ *
+ * On a terminal failure the pending channel is disposed. A filter the server
+ * rejects is remembered and retried as a catch-all, while the previous channel
+ * keeps working. A `CHANNEL_ERROR` on the catch-all itself is treated as a
+ * transient connection error, not a rejection: if a previous channel is still
+ * working it is kept, otherwise the errored channel is retained so realtime-js
+ * reconnects it instead of leaving the table with no subscription at all.
+ */
+function subscribeToChanges(
+  queryClient: QueryClient,
+  entry: TableEntry,
+  tableName: string,
+  collection: Collection<any, any>,
+  filters: URLSearchParams,
+  filtersKey: string
+) {
+  const previousChannel = entry.realtimeChannel
+  const previousFiltersKey = entry.realtimeFiltersKey
+
+  // A swap already in flight is now stale: tear it down before opening the next
+  // so a superseded replacement never leaks.
+  if (entry.realtimePendingChannel) {
+    entry.supabase.removeChannel(entry.realtimePendingChannel)
+    entry.realtimePendingChannel = null
+    entry.realtimePendingFiltersKey = null
+  }
+
+  const subscription = attachSupabaseListeners(
+    entry.supabase,
+    nextChannelTopic(tableName),
+    tableName,
+    collection,
+    filters
+  )
+
+  entry.realtimePendingChannel = subscription.channel
+  entry.realtimePendingFiltersKey = filtersKey
+
+  // True once a newer swap (or a teardown) has taken over this pending channel.
+  const superseded = () => entry.realtimePendingChannel !== subscription.channel
+
+  const onJoined = () => {
+    if (superseded()) {
+      return
+    }
+    if (previousChannel) {
+      entry.supabase.removeChannel(previousChannel)
+    }
+    entry.realtimeChannel = subscription.channel
+    entry.realtimeFiltersKey = filtersKey
+    entry.realtimePendingChannel = null
+    entry.realtimePendingFiltersKey = null
+  }
+
+  const onError = () => {
+    if (superseded()) {
+      entry.supabase.removeChannel(subscription.channel)
+      return
+    }
+    entry.realtimePendingChannel = null
+    entry.realtimePendingFiltersKey = null
+
+    if (filtersKey !== CATCH_ALL_KEY) {
+      // A filtered subscription the server refused: drop it, remember it, and
+      // let syncTableSubscription pick the catch-all it now maps to — the same
+      // decision the observer makes — while the previous channel keeps working.
+      entry.supabase.removeChannel(subscription.channel)
+      entry.rejectedFilterKeys.add(filtersKey)
+      syncTableSubscription(queryClient, tableName, entry)
+      return
+    }
+
+    // A catch-all has nothing to reject, so CHANNEL_ERROR here is a transient
+    // connection error rather than a filter rejection.
+    if (previousChannel) {
+      // A previous channel is still delivering changes: drop the failed
+      // catch-all and hand the swap back to the predecessor.
+      entry.supabase.removeChannel(subscription.channel)
+      entry.realtimeChannel = previousChannel
+      entry.realtimeFiltersKey = previousFiltersKey
+      return
+    }
+    // Nothing else is subscribed: keep the errored channel so realtime-js
+    // reconnects it (its listeners stay attached) instead of leaving the table
+    // with no subscription until an observer changes.
+    entry.realtimeChannel = subscription.channel
+    entry.realtimeFiltersKey = filtersKey
+  }
+
+  const onClosed = () => {
+    // A terminal close before joining will not reconnect: drop it and hand the
+    // swap back to the still-open previous channel.
+    if (superseded()) {
+      entry.supabase.removeChannel(subscription.channel)
+      return
+    }
+    entry.supabase.removeChannel(subscription.channel)
+    entry.realtimeChannel = previousChannel
+    entry.realtimeFiltersKey = previousFiltersKey
+    entry.realtimePendingChannel = null
+    entry.realtimePendingFiltersKey = null
+  }
+
+  subscription.outcome.then((status) => {
+    if (status === REALTIME_SUBSCRIBE_STATES.SUBSCRIBED) {
+      onJoined()
+    } else if (status === REALTIME_SUBSCRIBE_STATES.CHANNEL_ERROR) {
+      onError()
+    } else {
+      onClosed()
+    }
+  })
+}
+
+/**
+ * Reconcile one table's Realtime subscription with its active queries: tear the
+ * channel down when there are none, otherwise derive the filters and (re)open a
+ * channel unless the current (or in-flight) one already matches. This is the
+ * single place that maps active queries to filters, so both the cache observer
+ * and the rejection fallback route through it.
+ */
+export function syncTableSubscription(
+  queryClient: QueryClient,
+  tableName: string,
+  entry: TableEntry
+) {
+  const queries = queryClient.getQueryCache().findAll({
+    queryKey: [tableName],
+    type: "active",
+  })
+
+  // No active queries: tear down any existing subscription, including a swap
+  // still in flight, so neither the joined nor the pending channel leaks.
+  if (queries.length === 0) {
+    if (entry.realtimeChannel) {
+      entry.supabase.removeChannel(entry.realtimeChannel)
+    }
+    if (entry.realtimePendingChannel) {
+      entry.supabase.removeChannel(entry.realtimePendingChannel)
+    }
+    entry.realtimeChannel = null
+    entry.realtimeFiltersKey = null
+    entry.realtimePendingChannel = null
+    entry.realtimePendingFiltersKey = null
+    return
+  }
+
+  if (!entry.collectionRef) {
+    return
+  }
+
+  // Derive the Realtime filters from the WHERE clause of every active query so
+  // the subscription only receives changes that those queries care about. When
+  // server-side filtering is disabled, skip that and subscribe to every change.
+  let filters = CATCH_ALL_FILTERS
+  let filtersKey = CATCH_ALL_KEY
+  if (entry.realtimeUseFilter) {
+    const whereExpressions = queries.map(
+      (query) => query.meta?.loadSubsetOptions?.where
+    )
+    filters = realtimeFiltersToSearch(whereExpressions)
+    filtersKey = filters.toString()
+    if (entry.rejectedFilterKeys.has(filtersKey)) {
+      filters = CATCH_ALL_FILTERS
+      filtersKey = CATCH_ALL_KEY
+    }
+  }
+
+  // Reuse the existing subscription when the set of filters hasn't changed.
+  // While a swap is in flight the pending channel already targets the new
+  // filters, so compare against it to avoid firing the same swap twice.
+  const currentFiltersKey = entry.realtimePendingChannel
+    ? entry.realtimePendingFiltersKey
+    : entry.realtimeFiltersKey
+  if (
+    (entry.realtimeChannel || entry.realtimePendingChannel) &&
+    currentFiltersKey === filtersKey
+  ) {
+    return
+  }
+
+  subscribeToChanges(
+    queryClient,
+    entry,
+    tableName,
+    entry.collectionRef,
+    filters,
+    filtersKey
+  )
 }

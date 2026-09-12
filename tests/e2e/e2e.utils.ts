@@ -3,8 +3,8 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import { createCollection, createLiveQueryCollection } from "@tanstack/db"
 import { QueryClient } from "@tanstack/query-core"
 import { test as baseTest, expect, inject, vi } from "vitest"
-import { realtimeChannelTopicPrefix } from "../../src/db"
 import { supabaseCollectionOptions } from "../../src/index"
+import { realtimeChannelTopicPrefix } from "../../src/realtime"
 import { usersSchema } from "../test.utils"
 
 // Shared polling window for awaiting async PostgREST/realtime propagation.
