@@ -2,7 +2,7 @@
 
 > **Experimental.** The Realtime integration is still being stabilized and may consume more Realtime messages than expected.
 >
-> Test in orgs on the free plan or with a spend cap. Set `realtime: false` on individual collections to opt out.
+> Test in orgs on the free plan or with a spend cap. Set `realtime: false` on individual collections to opt out. To narrow a subscription to only send the needed messages and cut Realtime traffic, try the experimental `realtimeUseFilter: true` option (see below).
 
 A [TanStack DB](https://tanstack.com/db/latest) collection adapter backed by [Supabase](https://supabase.com/). It connects queries, mutations, and Realtime subscriptions so your UI stays in sync with Postgres.
 
@@ -132,6 +132,7 @@ const todos = createCollection(
 | `keys`        | `string[]`         | Yes      | Column or columns that uniquely identify a row. Should match the primary key(s) on your table.                            |
 | `supabase`    | `SupabaseClient`   | Yes      | Supabase client instance used for queries, mutations, and the Realtime subscription.                                   |
 | `realtime`    | `boolean`          | No       | When `true`, subscribes to Postgres changes and reconciles inserts, updates, and deletes into the collection. Defaults to `false`. |
+| `realtimeUseFilter` | `boolean`    | No       | **Experimental.** Only applies when `realtime` is `true`. When `true`, each active query's `WHERE` clause is pushed to the Realtime subscription as a `postgres_changes` filter, so the channel only receives changes those queries care about. Defaults to `false`, which subscribes to every change on the table and filters client-side — simpler, at the cost of more Realtime traffic. Queries whose `WHERE` cannot be expressed as a Realtime filter (e.g. `or(...)`) transparently fall back to the unfiltered subscription. |
 | `queryClient` | `QueryClient`      | No       | TanStack Query client. If omitted, a shared global client is used.                                                     |
 
 **Returns** a collection options object to pass to `createCollection`.
