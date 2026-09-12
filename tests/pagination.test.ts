@@ -1,0 +1,224 @@
+import { createClient, type SupabaseClient } from "@supabase/supabase-js"
+import { eq, IR, type LoadSubsetOptions } from "@tanstack/db"
+import { describe, expect, test, vi } from "vitest"
+import { supabaseQueryFn } from "../src/functions"
+import { normalizeFetchUrl, SUPABASE_KEY, SUPABASE_URL } from "./test.utils"
+
+interface TestRow {
+  active: boolean
+  email: string
+  id: number
+  name: string
+}
+
+const makeRows = (count: number): TestRow[] =>
+  Array.from({ length: count }, (_, id) => ({
+    active: true,
+    email: `user-${id}@test.com`,
+    id,
+    name: `User ${id}`,
+  }))
+
+const createPagedFetch = (
+  rows: TestRow[],
+  {
+    errorOffset,
+    maxRows = 1000,
+  }: { errorOffset?: number; maxRows?: number } = {}
+) =>
+  vi.fn<typeof fetch>().mockImplementation((input) => {
+    const url = new URL(typeof input === "string" ? input : input.toString())
+    const offset = Number(url.searchParams.get("offset") ?? 0)
+    const requestedLimit = Number(url.searchParams.get("limit") ?? maxRows)
+    const limit = Math.min(requestedLimit, maxRows)
+
+    if (offset === errorOffset) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            code: "PGRST000",
+            details: null,
+            hint: null,
+            message: "page failed",
+          }),
+          {
+            status: 500,
+            headers: { "content-type": "application/json" },
+          }
+        )
+      )
+    }
+
+    return Promise.resolve(
+      new Response(JSON.stringify(rows.slice(offset, offset + limit)), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    )
+  })
+
+const runQuery = (
+  supabase: SupabaseClient,
+  loadSubsetOptions: LoadSubsetOptions = {},
+  pageSize?: number,
+  keys = ["id"]
+) =>
+  supabaseQueryFn(
+    supabase,
+    "users",
+    keys,
+    {
+      client: {} as never,
+      queryKey: ["users"],
+      signal: new AbortController().signal,
+      meta: { loadSubsetOptions },
+    },
+    pageSize
+  )
+
+const sort = (column: string, direction: "asc" | "desc" = "asc") => ({
+  expression: new IR.PropRef([column]),
+  compareOptions: { direction, nulls: "last" as const },
+})
+
+const queryOptions = (): LoadSubsetOptions => ({
+  orderBy: [sort("id")],
+  where: eq(new IR.PropRef<boolean>(["active"]), true),
+})
+
+describe("collection query pagination", () => {
+  test("does not duplicate rows when the server cap exceeds pageSize", async () => {
+    const expected = makeRows(3501)
+    const mockFetch = createPagedFetch(expected, { maxRows: 2000 })
+    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      global: { fetch: mockFetch },
+    })
+
+    const rows = await runQuery(supabase)
+
+    expect(rows).toEqual(expected)
+    expect(mockFetch).toHaveBeenCalledTimes(4)
+    for (const [url] of mockFetch.mock.calls) {
+      expect(new URL(String(url)).searchParams.get("limit")).toBe("1000")
+    }
+  })
+
+  test.each([
+    { keys: ["id"], orderBy: undefined, expected: "id.asc" },
+    {
+      keys: ["id"],
+      orderBy: [sort("active", "desc")],
+      expected: "active.desc,id.asc",
+    },
+    {
+      keys: ["id"],
+      orderBy: [sort("active"), sort("id", "desc")],
+      expected: "active.asc,id.desc",
+    },
+    {
+      keys: ["email", "id"],
+      orderBy: undefined,
+      expected: "email.asc,id.asc",
+    },
+    {
+      keys: ["email", "id"],
+      orderBy: [sort("email", "desc")],
+      expected: "email.desc,id.asc",
+    },
+  ])("uses unique ordering $expected on every page", async ({
+    keys,
+    orderBy,
+    expected,
+  }) => {
+    const mockFetch = createPagedFetch(makeRows(5), { maxRows: 2 })
+    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      global: { fetch: mockFetch },
+    })
+
+    await runQuery(supabase, { orderBy }, 2, keys)
+
+    expect(mockFetch).toHaveBeenCalledTimes(3)
+    for (const [url] of mockFetch.mock.calls) {
+      expect(new URL(String(url)).searchParams.get("order")).toBe(expected)
+    }
+  })
+
+  test("fetches all rows across multiple PostgREST pages", async () => {
+    const mockFetch = createPagedFetch(makeRows(2501))
+    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      global: { fetch: mockFetch },
+    })
+
+    const rows = await runQuery(supabase)
+
+    expect(rows).toHaveLength(2501)
+    expect(mockFetch.mock.calls.map(([url]) => normalizeFetchUrl(url))).toEqual(
+      [
+        "/rest/v1/users?limit=1000&order=id.asc&select=*",
+        "/rest/v1/users?limit=1000&offset=1000&order=id.asc&select=*",
+        "/rest/v1/users?limit=1000&offset=2000&order=id.asc&select=*",
+      ]
+    )
+  })
+
+  test("preserves filters, ordering, limits, and offsets on every page", async () => {
+    const mockFetch = createPagedFetch(makeRows(12), { maxRows: 2 })
+    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      global: { fetch: mockFetch },
+    })
+
+    const rows = await runQuery(
+      supabase,
+      { ...queryOptions(), limit: 5, offset: 3 },
+      2
+    )
+
+    expect(rows.map(({ id }) => id)).toEqual([3, 4, 5, 6, 7])
+    expect(mockFetch.mock.calls.map(([url]) => normalizeFetchUrl(url))).toEqual(
+      [
+        "/rest/v1/users?active=eq.true&limit=2&offset=3&order=id.asc&select=*",
+        "/rest/v1/users?active=eq.true&limit=2&offset=5&order=id.asc&select=*",
+        "/rest/v1/users?active=eq.true&limit=1&offset=7&order=id.asc&select=*",
+      ]
+    )
+  })
+
+  test("stops after a short final page", async () => {
+    const mockFetch = createPagedFetch(makeRows(3), { maxRows: 2 })
+    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      global: { fetch: mockFetch },
+    })
+
+    const rows = await runQuery(supabase, {}, 2)
+
+    expect(rows).toHaveLength(3)
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+  })
+
+  test("does not request beyond an explicit limit", async () => {
+    const mockFetch = createPagedFetch(makeRows(8), { maxRows: 2 })
+    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      global: { fetch: mockFetch },
+    })
+
+    const rows = await runQuery(supabase, { limit: 4 }, 2)
+
+    expect(rows).toHaveLength(4)
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+  })
+
+  test("fails the complete load when a later page errors", async () => {
+    const mockFetch = createPagedFetch(makeRows(5), {
+      errorOffset: 2,
+      maxRows: 2,
+    })
+    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      global: { fetch: mockFetch },
+    })
+
+    await expect(runQuery(supabase, {}, 2)).rejects.toMatchObject({
+      message: "page failed",
+    })
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+  })
+})

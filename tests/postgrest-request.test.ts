@@ -29,7 +29,7 @@ describe("query key matches request URL", () => {
     const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
       global: { fetch: mockFetch },
     })
-    await supabaseQueryFn(supabase, "users", {
+    await supabaseQueryFn(supabase, "users", ["id"], {
       client: new QueryClient(),
       queryKey: ["users"],
       signal: new AbortController().signal,
