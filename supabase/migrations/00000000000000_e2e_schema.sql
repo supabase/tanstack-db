@@ -24,6 +24,11 @@ create table public.users_todos (
   primary key (user_id, todo_id)
 );
 
+create table public.timestamp_keys (
+  recorded_at timestamptz primary key,
+  label text not null
+);
+
 -- Scratch table used only by the global-setup realtime warm-up: it inserts
 -- rows here until a postgres_changes event is actually delivered, proving the
 -- WAL -> realtime pipeline is live without touching the tables tests read.
@@ -46,6 +51,7 @@ alter publication supabase_realtime add table public.e2e_warmup;
 alter table public.users enable row level security;
 alter table public.todos enable row level security;
 alter table public.users_todos enable row level security;
+alter table public.timestamp_keys enable row level security;
 alter table public.e2e_warmup enable row level security;
 
 create policy "e2e allow all" on public.users
@@ -53,6 +59,8 @@ create policy "e2e allow all" on public.users
 create policy "e2e allow all" on public.todos
   for all to public using (true) with check (true);
 create policy "e2e allow all" on public.users_todos
+  for all to public using (true) with check (true);
+create policy "e2e allow all" on public.timestamp_keys
   for all to public using (true) with check (true);
 create policy "e2e allow all" on public.e2e_warmup
   for all to public using (true) with check (true);
@@ -68,7 +76,7 @@ language sql
 security definer
 set search_path = ''
 as $$
-  truncate table public.users_todos, public.todos, public.users
+  truncate table public.users_todos, public.todos, public.users, public.timestamp_keys
     restart identity cascade;
   insert into public.users (name, email, active) values
     ('Alice', 'alice@test.com', true),

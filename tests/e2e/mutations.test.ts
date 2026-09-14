@@ -1,5 +1,41 @@
 import { expect, vi } from "vitest"
+import { keyColumnsToSearch } from "../../src/postgrest-filters"
+import { postgrestRequest } from "../../src/postgrest-request"
 import { test, WAIT } from "./e2e.utils"
+
+test("update and delete filters preserve timestamp key milliseconds", async ({
+  other,
+}) => {
+  const timestamp = new Date("2024-01-01T12:30:00.123Z")
+  const neighbor = "2024-01-01T12:30:00.456Z"
+  const { error: insertError } = await other.from("timestamp_keys").insert([
+    { recorded_at: timestamp.toISOString(), label: "target" },
+    { recorded_at: neighbor, label: "neighbor" },
+  ])
+  expect(insertError).toBeNull()
+
+  await postgrestRequest(other, "timestamp_keys", {
+    method: "PATCH",
+    search: keyColumnsToSearch(["recorded_at"], { recorded_at: timestamp }),
+    body: { label: "updated" },
+  })
+  const { data: updated, error: updateError } = await other
+    .from("timestamp_keys")
+    .select("label")
+    .order("recorded_at")
+  expect(updateError).toBeNull()
+  expect(updated).toEqual([{ label: "updated" }, { label: "neighbor" }])
+
+  await postgrestRequest(other, "timestamp_keys", {
+    method: "DELETE",
+    search: keyColumnsToSearch(["recorded_at"], { recorded_at: timestamp }),
+  })
+  const { data: remaining, error: deleteError } = await other
+    .from("timestamp_keys")
+    .select("label")
+  expect(deleteError).toBeNull()
+  expect(remaining).toEqual([{ label: "neighbor" }])
+})
 
 test("inserts a row through PostgREST and reflects the server row", async ({
   users,

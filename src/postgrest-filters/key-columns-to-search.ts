@@ -1,4 +1,4 @@
-import { paramsToSearch } from "./common"
+import { paramsToSearch, toScalarString } from "./common"
 
 /** Build the `key.eq.value` search that matches one row by its key columns. */
 export function keyColumnsToSearch(
@@ -10,7 +10,7 @@ export function keyColumnsToSearch(
       kind: "column",
       column: key,
       operator: "eq",
-      value: `${item[key]}`,
+      value: toScalarString(item[key]),
     }))
   )
 }

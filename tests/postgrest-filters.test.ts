@@ -322,6 +322,27 @@ describe("loadSubsetOptionsToSearch", () => {
 
 // ── keyColumnsToSearch ──────────────────────────────────────────────
 describe("keyColumnsToSearch", () => {
+  test("serializes Date keys as ISO timestamps", () => {
+    const timestamp = new Date("2024-01-01T12:30:00.123Z")
+    const search = keyColumnsToSearch(["recorded_at"], {
+      recorded_at: timestamp,
+    })
+
+    expect(search.get("recorded_at")).toBe("eq.2024-01-01T12:30:00.123Z")
+  })
+
+  test("serializes Date values in composite keys without changing other keys", () => {
+    const search = keyColumnsToSearch(["sensor_id", "recorded_at"], {
+      sensor_id: "east,1",
+      recorded_at: new Date("2024-01-01T14:30:00.123+02:00"),
+    })
+
+    expect([...search]).toEqual([
+      ["sensor_id", "eq.east,1"],
+      ["recorded_at", "eq.2024-01-01T12:30:00.123Z"],
+    ])
+  })
+
   test("builds an eq filter for a single key column", () => {
     expect(keyColumnsToSearch(["id"], { id: 1, name: "x" }).get("id")).toBe(
       "eq.1"
