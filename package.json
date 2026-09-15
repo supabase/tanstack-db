@@ -45,6 +45,9 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.7",
+    "@journeyapps/wa-sqlite": "1.4.1",
+    "@tanstack/browser-db-sqlite-persistence": "0.1.11",
+    "@tanstack/offline-transactions": "1.0.32",
     "@types/node": "^25.0.3",
     "bumpp": "^10.3.2",
     "supabase": "^2.116.0",

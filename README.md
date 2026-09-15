@@ -164,6 +164,13 @@ const completedTodos = await queryOnce(
 
 Use `queryOnce` when you need a one-shot fetch, such as in server components, API routes, or form submissions where live updates are not needed.
 
+## Offline Support
+
+Browser SQLite persistence and durable offline writes can be composed with
+this adapter. See the [offline Supabase collections guide](docs/offline.md) for
+a typechecked example, compatible dependency versions, and the limits around
+Auth, RLS, Realtime recovery, retries, conflicts, and multiple tabs.
+
 Filters, ordering, `limit`, `offset`, joins, and aggregate functions (`count`, `sum`, `avg`, `min`, `max`) are pushed to PostgREST. Operations that cannot be pushed fall back to fetching matching rows and processing them client-side.
 
 Fallback operations include `GROUP BY`, `HAVING`, `DISTINCT`, and computed `SELECT` expressions.
