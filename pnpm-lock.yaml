@@ -18,7 +18,7 @@ importers:
         specifier: ^2.74.0
         version: 2.107.0
       '@tanstack/db':
-        specifier: ^0.6.0
+        specifier: '>=0.5.12 <1.0'
         version: 0.6.7(typescript@5.9.3)
       '@tanstack/query-core':
         specifier: ^5.0.0
