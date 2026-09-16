@@ -70,6 +70,14 @@ export const supabaseQueryFn = async (
   // A keyset request whose boundary column has ties (e.g. `orderBy(created_at)`
   // with repeated values) needs a second, unlimited request for the rows equal
   // to the boundary; the limited `whereFrom` page alone would skip them.
+  //
+  // Do not drop this on the grounds that core's ordered-source loader also
+  // probes the boundary (`requestSnapshot({ where: eq(col, boundary) })`) and
+  // usually pre-loads the same tie class: that probe is a window-path
+  // optimization the adapter cannot assume ran. It is skipped when the boundary
+  // value is unchanged, falls back to a full-source load for non-keyset orders,
+  // and never runs for `loadSubset({ cursor })` calls made outside that path.
+  // Honouring `whereCurrent` here is what makes the cursor correct on its own.
   const tiesSearch = cursorCurrentToSearch(options)
   if (!tiesSearch) {
     const data = await postgrestRequest(supabase, tableName, {
