@@ -25,7 +25,11 @@ export function subsetParamsToSearch(
       ascending: sort.direction === "asc",
     }))
   )
-  if (limit) {
+  // `limit: 0` is a real, distinct subset (an empty window). Guard on
+  // `undefined`, not falsiness, so it does not collide with the unlimited query
+  // on one cache key — otherwise the empty limit-0 result would take over and
+  // delete every row the unlimited query owns.
+  if (limit !== undefined) {
     appendLimit(search, limit)
   }
   return search

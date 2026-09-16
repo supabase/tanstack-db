@@ -31,8 +31,19 @@ export const subsetOptionsToQueryKey = (
   // The key still starts with `[tableName]` so `syncTableSubscription` keeps
   // matching every window of the table by prefix.
   const search = subsetParamsToSearch(ctx)
-  for (const [k, v] of cursorWhereFromToSearch(ctx.cursor)) {
-    search.append(k, v)
+  if (ctx.cursor) {
+    try {
+      for (const [k, v] of cursorWhereFromToSearch(ctx.cursor)) {
+        search.append(k, v)
+      }
+    } catch {
+      // The queryKey function must never throw — query-db-collection calls it
+      // synchronously to key row ownership. If the cursor cannot be rendered
+      // (an un-pushable predicate), fall back to a deterministic discriminator
+      // so distinct windows still get distinct keys and cannot take over and
+      // delete each other's rows.
+      search.append("cursor", JSON.stringify(ctx.cursor.whereFrom))
+    }
   }
   if (ctx.offset && !ctx.cursor) {
     search.append("offset", `${ctx.offset}`)

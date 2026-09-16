@@ -1,60 +1,22 @@
-import {
-  extractSimpleComparisons,
-  type LoadSubsetOptions,
-  type SimpleComparison,
-} from "@tanstack/db"
-import type { PostgrestParam } from "./common"
-import { appendOffset, paramsToSearch, quoteValue } from "./common"
+import type { LoadSubsetOptions } from "@tanstack/db"
+import { appendOffset, paramsToSearch, toPostgrestParams } from "./common"
 import { subsetParamsToSearch } from "./subset-params-to-search"
 
-// Cursor operators arrive pre-flattened as `SimpleComparison`. Scalar values
-// are emitted raw (top-level params must not be quoted); only IN members quote.
-const CURSOR_SCALAR_OPERATORS: Record<string, string> = {
-  eq: "eq",
-  gt: "gt",
-  gte: "gte",
-  lt: "lt",
-  lte: "lte",
-  not_eq: "not.eq",
-}
-
-/** Convert pre-flattened cursor comparisons to PostgREST params. */
-function cursorToPostgrestParams(
-  filters: SimpleComparison[]
-): PostgrestParam[] {
-  return filters.flatMap((filter): PostgrestParam[] => {
-    const column = filter.field.join(".")
-    if (filter.operator === "in") {
-      const values = Array.isArray(filter.value) ? filter.value : []
-      return [
-        {
-          kind: "column",
-          column,
-          operator: "in",
-          value: `(${values.map(quoteValue).join(",")})`,
-        },
-      ]
-    }
-    if (filter.operator === "isNull") {
-      return [{ kind: "column", column, operator: "is", value: "null" }]
-    }
-    const operator = CURSOR_SCALAR_OPERATORS[filter.operator]
-    if (!operator) {
-      console.warn(
-        `cursorToPostgrestParams: unsupported operator: ${filter.operator}`
-      )
-      return []
-    }
-    return [{ kind: "column", column, operator, value: `${filter.value}` }]
-  })
-}
-
-/** Render the cursor's `whereFrom` (keyset "rows after boundary") filters. */
+/**
+ * Render the cursor's `whereFrom` (keyset "rows after boundary") filters.
+ *
+ * Uses the adapter's own {@link toPostgrestParams} renderer so it handles the
+ * composite cursors core emits for multi-column `orderBy`
+ * (`or(gt(c1,v1), and(eq(c1,v1), gt(c2,v2)))`) and serialises Date boundaries
+ * as ISO 8601 — both of which the pre-flattening `extractSimpleComparisons`
+ * path could not. `strict` surfaces any un-pushable cursor rather than silently
+ * dropping a predicate and widening the window.
+ */
 export function cursorWhereFromToSearch(
   cursor: LoadSubsetOptions["cursor"]
 ): URLSearchParams {
-  const filters = cursor ? [...extractSimpleComparisons(cursor.whereFrom)] : []
-  return paramsToSearch(cursorToPostgrestParams(filters))
+  if (!cursor) return new URLSearchParams()
+  return paramsToSearch(toPostgrestParams(cursor.whereFrom, { strict: true }))
 }
 
 /**
@@ -96,10 +58,10 @@ export function cursorCurrentToSearch(
   options: LoadSubsetOptions
 ): URLSearchParams | null {
   if (!options.cursor) return null
-  const currentFilters = [
-    ...extractSimpleComparisons(options.cursor.whereCurrent),
-  ]
-  if (currentFilters.length === 0) return null
+  const currentParams = toPostgrestParams(options.cursor.whereCurrent, {
+    strict: true,
+  })
+  if (currentParams.length === 0) return null
 
   const search = new URLSearchParams()
   search.set("select", "*")
@@ -110,9 +72,7 @@ export function cursorCurrentToSearch(
   })) {
     search.append(key, value)
   }
-  for (const [key, value] of paramsToSearch(
-    cursorToPostgrestParams(currentFilters)
-  )) {
+  for (const [key, value] of paramsToSearch(currentParams)) {
     search.append(key, value)
   }
   return search

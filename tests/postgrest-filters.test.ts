@@ -331,6 +331,36 @@ describe("loadSubsetOptionsToSearch", () => {
     expect(search.get("limit")).toBe("20")
     expect(search.has("offset")).toBe(false)
   })
+
+  test("renders a composite multi-column cursor without throwing", () => {
+    const a = col("a")
+    const b = col("b")
+    const build = () =>
+      loadSubsetOptionsToSearch({
+        orderBy: [sort(a, "asc"), sort(b, "asc")],
+        limit: 20,
+        cursor: {
+          whereFrom: or(gt(a, 1), and(eq(a, 1), gt(b, 2))),
+          whereCurrent: eq(a, 1),
+        },
+      })
+    expect(build).not.toThrow()
+    expect(build().get("or")).toBe("(a.gt.1,and(a.eq.1,b.gt.2))")
+  })
+
+  test("serialises a Date cursor boundary as ISO 8601", () => {
+    const createdAt = col("created_at")
+    const boundary = new Date("2024-01-01T00:00:00.000Z")
+    const search = loadSubsetOptionsToSearch({
+      orderBy: [sort(createdAt, "asc")],
+      limit: 20,
+      cursor: {
+        whereFrom: gt(createdAt, boundary),
+        whereCurrent: eq(createdAt, boundary),
+      },
+    })
+    expect(search.get("created_at")).toBe("gt.2024-01-01T00:00:00.000Z")
+  })
 })
 
 // ── cursorCurrentToSearch ───────────────────────────────────────────
@@ -567,5 +597,38 @@ describe("subsetOptionsToQueryKey", () => {
     expect(
       subsetOptionsToQueryKey("users", { ...base, offset: 20 })
     ).not.toEqual(subsetOptionsToQueryKey("users", { ...base, offset: 40 }))
+  })
+
+  test("gives distinct multi-column cursor windows distinct keys", () => {
+    const a = col("a")
+    const b = col("b")
+    const base = { orderBy: [sort(a, "asc"), sort(b, "asc")], limit: 20 }
+    const page2 = subsetOptionsToQueryKey("users", {
+      ...base,
+      cursor: {
+        whereFrom: or(gt(a, 1), and(eq(a, 1), gt(b, 2))),
+        whereCurrent: eq(a, 1),
+      },
+    })
+    const page3 = subsetOptionsToQueryKey("users", {
+      ...base,
+      cursor: {
+        whereFrom: or(gt(a, 3), and(eq(a, 3), gt(b, 4))),
+        whereCurrent: eq(a, 3),
+      },
+    })
+    expect(page2).not.toEqual(page3)
+    expect(page2[0]).toBe("users")
+    expect(page3[0]).toBe("users")
+  })
+
+  test("keeps limit: 0 distinct from an unlimited subset", () => {
+    const zero = subsetOptionsToQueryKey("users", {
+      where: eq(id, 1),
+      limit: 0,
+    })
+    const unlimited = subsetOptionsToQueryKey("users", { where: eq(id, 1) })
+    expect(zero).not.toEqual(unlimited)
+    expect(new URLSearchParams(zero[1]).get("limit")).toBe("0")
   })
 })
