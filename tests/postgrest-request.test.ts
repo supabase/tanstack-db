@@ -43,3 +43,43 @@ describe("query key matches request URL", () => {
     }
   })
 })
+
+describe("cursor pagination fetches boundary ties", () => {
+  test("a cursor load issues an unlimited tie request and a limited keyset request", async () => {
+    const id = new IR.PropRef<number>(["id"])
+    const mockFetch = createMockFetch()
+    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      global: { fetch: mockFetch },
+    })
+
+    await supabaseQueryFn(supabase, "users", {
+      client: new QueryClient(),
+      queryKey: ["users"],
+      signal: new AbortController().signal,
+      meta: {
+        loadSubsetOptions: {
+          orderBy: [
+            {
+              expression: id,
+              compareOptions: { direction: "asc", nulls: "last" },
+            },
+          ],
+          limit: 20,
+          cursor: { whereFrom: gt(id, 40), whereCurrent: eq(id, 40) },
+        },
+      },
+    })
+
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+    const urls = mockFetch.mock.calls.map(
+      (call: unknown[]) => new URL(String(call[0])).searchParams
+    )
+    const ties = urls.find((s) => s.get("id") === "eq.40")
+    const keyset = urls.find((s) => s.get("id") === "gt.40")
+
+    expect(ties?.has("limit")).toBe(false)
+    expect(keyset?.get("limit")).toBe("20")
+    // Cursor pins the window; offset must never ride alongside it.
+    expect(keyset?.has("offset")).toBe(false)
+  })
+})

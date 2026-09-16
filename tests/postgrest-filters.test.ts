@@ -17,6 +17,7 @@ import {
 import { describe, expect, test } from "vitest"
 import { subsetOptionsToQueryKey } from "../src/functions"
 import {
+  cursorCurrentToSearch,
   keyColumnsToSearch,
   loadSubsetOptionsToSearch,
   queryIrToSearch,
@@ -318,6 +319,38 @@ describe("loadSubsetOptionsToSearch", () => {
     expect(search.get("name")).toBe('in.("a,b",c)')
     expect(search.get("id")).toBe("gt.5")
   })
+
+  test("honours the cursor and skips offset when both are present", () => {
+    const search = loadSubsetOptionsToSearch({
+      orderBy: [sort(id, "asc")],
+      limit: 20,
+      offset: 20,
+      cursor: { whereFrom: gt(id, 40), whereCurrent: eq(id, 40) },
+    })
+    expect(search.get("id")).toBe("gt.40")
+    expect(search.get("limit")).toBe("20")
+    expect(search.has("offset")).toBe(false)
+  })
+})
+
+// ── cursorCurrentToSearch ───────────────────────────────────────────
+describe("cursorCurrentToSearch", () => {
+  test("returns null without a cursor", () => {
+    expect(cursorCurrentToSearch({ where: eq(id, 1) })).toBeNull()
+  })
+
+  test("renders where + order + whereCurrent, never limit", () => {
+    const search = cursorCurrentToSearch({
+      where: eq(active, true),
+      orderBy: [sort(id, "asc")],
+      limit: 20,
+      cursor: { whereFrom: gt(id, 40), whereCurrent: eq(id, 40) },
+    })
+    expect(search?.get("active")).toBe("eq.true")
+    expect(search?.get("order")).toBe("id.asc")
+    expect(search?.get("id")).toBe("eq.40")
+    expect(search?.has("limit")).toBe(false)
+  })
 })
 
 // ── keyColumnsToSearch ──────────────────────────────────────────────
@@ -511,5 +544,28 @@ describe("subsetOptionsToQueryKey", () => {
     expect(
       key(and(inArray(name, ["a", "b"]), inArray(name, ["b", "c"])))
     ).toEqual(key(inArray(name, ["a", "b", "c"])))
+  })
+
+  test("gives distinct cursor windows of one subset distinct keys", () => {
+    const base = { orderBy: [sort(id, "asc")], limit: 20 }
+    const page2 = subsetOptionsToQueryKey("users", {
+      ...base,
+      cursor: { whereFrom: gt(id, 20), whereCurrent: eq(id, 20) },
+    })
+    const page3 = subsetOptionsToQueryKey("users", {
+      ...base,
+      cursor: { whereFrom: gt(id, 40), whereCurrent: eq(id, 40) },
+    })
+    expect(page2).not.toEqual(page3)
+    // The prefix stays `[tableName]` so realtime keeps matching every window.
+    expect(page2[0]).toBe("users")
+    expect(page3[0]).toBe("users")
+  })
+
+  test("gives distinct offset windows of one subset distinct keys", () => {
+    const base = { orderBy: [sort(id, "asc")], limit: 20 }
+    expect(
+      subsetOptionsToQueryKey("users", { ...base, offset: 20 })
+    ).not.toEqual(subsetOptionsToQueryKey("users", { ...base, offset: 40 }))
   })
 })
