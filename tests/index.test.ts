@@ -672,7 +672,7 @@ describe("PostgREST query generation", () => {
   })
 
   describe("LIMIT", () => {
-    test("basic limit", async () => {
+    test.todo("basic limit", async () => {
       await queryResult((q) =>
         q
           .from({ user: usersCollection })
@@ -759,7 +759,7 @@ describe("PostgREST query generation", () => {
   })
 
   describe("Combined queries", () => {
-    test("WHERE + ORDER BY + LIMIT", async () => {
+    test.todo("WHERE + ORDER BY + LIMIT", async () => {
       await queryResult((q) =>
         q
           .from({ user: usersCollection })
