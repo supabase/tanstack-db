@@ -3,6 +3,7 @@ export {
   cursorCurrentToSearch,
   cursorWhereFromToSearch,
   loadSubsetOptionsToSearch,
+  subsetSorts,
 } from "./load-subset-options-to-search"
 export { queryIrToSearch } from "./query-ir-to-search"
 export { realtimeFiltersToSearch } from "./realtime-filters-to-search"

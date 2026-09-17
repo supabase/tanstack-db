@@ -5,16 +5,27 @@ import { CLIENT_INFO, CLIENT_INFO_HEADER } from "./request-headers"
 
 const SINGLE_ROW_ACCEPT = "application/vnd.pgrst.object+json"
 
+type CountAlgorithm = "exact" | "planned" | "estimated"
+
 interface PostgrestRequestOptions {
   /** JSON body for insert/update. */
   body?: unknown
+  /** Ask PostgREST for the total matching row count (`Prefer: count=...`). */
+  count?: CountAlgorithm
   method: "GET" | "POST" | "PATCH" | "DELETE"
   /** Ask PostgREST to return the affected rows (`Prefer: return=representation`). */
   returnRows?: boolean
   /** The full query string, built by the params helpers. */
   search: URLSearchParams
+  /** Abort the underlying fetch when this signal fires. */
+  signal?: AbortSignal
   /** Expect exactly one row (`Accept: application/vnd.pgrst.object+json`). */
   single?: boolean
+}
+
+interface PostgrestResponse {
+  count: number | null
+  data: any
 }
 
 /**
@@ -29,12 +40,23 @@ interface PostgrestRequestOptions {
  * documented standalone entry point — so we reuse its `Accept-Profile`/
  * `Content-Profile`, response parsing, and error handling without re-deriving
  * auth ourselves.
+ *
+ * Resolves with the parsed body and, when `count` was requested, the total
+ * number of matching rows PostgREST reported in `Content-Range`.
  */
 export async function postgrestRequest(
   supabase: SupabaseClient,
   table: string,
-  { method, search, body, returnRows, single }: PostgrestRequestOptions
-): Promise<any> {
+  {
+    method,
+    search,
+    body,
+    count,
+    returnRows,
+    signal,
+    single,
+  }: PostgrestRequestOptions
+): Promise<PostgrestResponse> {
   const queryBuilder = supabase.from(table)
 
   const url = new URL(queryBuilder.url.toString())
@@ -44,6 +66,9 @@ export async function postgrestRequest(
   headers.set(CLIENT_INFO_HEADER, CLIENT_INFO)
   if (returnRows) {
     headers.append("Prefer", "return=representation")
+  }
+  if (count) {
+    headers.append("Prefer", `count=${count}`)
   }
   if (single) {
     headers.set("Accept", SINGLE_ROW_ACCEPT)
@@ -58,9 +83,13 @@ export async function postgrestRequest(
     fetch: queryBuilder.fetch,
   })
 
-  const { data, error } = await builder
+  if (signal) {
+    builder.abortSignal(signal)
+  }
+
+  const { data, error, count: total } = await builder
   if (error) {
     throw error
   }
-  return data
+  return { data, count: total }
 }

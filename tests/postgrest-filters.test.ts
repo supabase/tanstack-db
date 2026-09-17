@@ -23,6 +23,7 @@ import {
   queryIrToSearch,
   realtimeFiltersToSearch,
   subsetParamsToSearch,
+  subsetSorts,
 } from "../src/postgrest-filters"
 
 // A bare (unaliased) column ref, as the live subset loader receives them.
@@ -266,19 +267,14 @@ describe("subsetParamsToSearch", () => {
     expect(JSON.stringify(where)).toBe(before)
   })
 
-  test("excludes select, offset, and cursor (pagination/request details)", () => {
+  test("excludes select, offset, and cursor (added by the key and request builders)", () => {
     const search = subsetParamsToSearch({
-      where: eq(id, 1),
-      limit: 5,
-      offset: 99,
-      cursor: { whereFrom: gt(id, 1), whereCurrent: eq(id, 1) },
+      offset: 20,
+      cursor: { whereFrom: gt(id, 5), whereCurrent: eq(id, 5) },
     })
-    expect(search.get("id")).toBe("eq.1")
-    expect(search.get("limit")).toBe("5")
-    expect(search.has("select")).toBe(false)
     expect(search.has("offset")).toBe(false)
-    // The cursor's `gt(id, 1)` must not leak in as an id filter.
-    expect(search.getAll("id")).toEqual(["eq.1"])
+    expect(search.has("id")).toBe(false)
+    expect(search.has("select")).toBe(false)
   })
 })
 
@@ -292,7 +288,7 @@ describe("loadSubsetOptionsToSearch", () => {
     expect([...loadSubsetOptionsToSearch({})]).toEqual([["select", "*"]])
   })
 
-  test("includes where, order and limit from the subset params", () => {
+  test("includes where and order from the subset params, omitting limit", () => {
     const search = loadSubsetOptionsToSearch({
       where: eq(id, 1),
       orderBy: [sort(id, "asc")],
@@ -300,12 +296,12 @@ describe("loadSubsetOptionsToSearch", () => {
     })
     expect(search.get("id")).toBe("eq.1")
     expect(search.get("order")).toBe("id.asc")
-    expect(search.get("limit")).toBe("5")
+    expect(search.has("limit")).toBe(false)
   })
 
-  test("appends offset independently of limit", () => {
+  test("omits offset (left to the pagination loop)", () => {
     const search = loadSubsetOptionsToSearch({ offset: 20 })
-    expect(search.get("offset")).toBe("20")
+    expect(search.has("offset")).toBe(false)
     expect(search.has("limit")).toBe(false)
   })
 
@@ -320,6 +316,21 @@ describe("loadSubsetOptionsToSearch", () => {
     expect(search.get("id")).toBe("gt.5")
   })
 
+  test("appends missing key columns as tie-breakers after the requested order", () => {
+    expect(
+      loadSubsetOptionsToSearch({ orderBy: [sort(name, "asc")] }, ["id"]).get(
+        "order"
+      )
+    ).toBe("name.asc,id.asc")
+  })
+
+  test("keeps an explicit key sort direction", () => {
+    expect(
+      loadSubsetOptionsToSearch({ orderBy: [sort(id, "desc")] }, ["id"]).get(
+        "order"
+      )
+    ).toBe("id.desc")
+  })
   test("honours the cursor and skips offset when both are present", () => {
     const search = loadSubsetOptionsToSearch({
       orderBy: [sort(id, "asc")],
@@ -328,7 +339,8 @@ describe("loadSubsetOptionsToSearch", () => {
       cursor: { whereFrom: gt(id, 40), whereCurrent: eq(id, 40) },
     })
     expect(search.get("id")).toBe("gt.40")
-    expect(search.get("limit")).toBe("20")
+    // limit and offset belong to the pagination loop, not the shared search.
+    expect(search.has("limit")).toBe(false)
     expect(search.has("offset")).toBe(false)
   })
 
@@ -380,6 +392,22 @@ describe("cursorCurrentToSearch", () => {
     expect(search?.get("order")).toBe("id.asc")
     expect(search?.get("id")).toBe("eq.40")
     expect(search?.has("limit")).toBe(false)
+  })
+})
+
+describe("subsetSorts", () => {
+  test("defaults every key column to ascending when no order is requested", () => {
+    expect(subsetSorts({}, ["email", "id"])).toEqual([
+      { column: "email", ascending: true },
+      { column: "id", ascending: true },
+    ])
+  })
+
+  test("keeps the requested order and appends missing key columns as tie-breakers", () => {
+    expect(subsetSorts({ orderBy: [sort(name, "desc")] }, ["id"])).toEqual([
+      { column: "name", ascending: false },
+      { column: "id", ascending: true },
+    ])
   })
 })
 
@@ -630,5 +658,17 @@ describe("subsetOptionsToQueryKey", () => {
     const unlimited = subsetOptionsToQueryKey("users", { where: eq(id, 1) })
     expect(zero).not.toEqual(unlimited)
     expect(new URLSearchParams(zero[1]).get("limit")).toBe("0")
+  })
+
+  test("distinguishes pages of a live query", () => {
+    expect(subsetOptionsToQueryKey("users", { where: eq(id, 1) })).not.toEqual(
+      subsetOptionsToQueryKey("users", { where: eq(id, 1), offset: 20 })
+    )
+    expect(subsetOptionsToQueryKey("users", { where: eq(id, 1) })).not.toEqual(
+      subsetOptionsToQueryKey("users", {
+        where: eq(id, 1),
+        cursor: { whereFrom: gt(id, 1), whereCurrent: eq(id, 1) },
+      })
+    )
   })
 })

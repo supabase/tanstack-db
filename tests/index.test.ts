@@ -56,7 +56,7 @@ describe("PostgREST query generation", () => {
   describe("FROM", () => {
     test("SELECT * FROM users", async () => {
       await queryResult((q) => q.from({ user: usersCollection }))
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
   })
 
@@ -67,14 +67,18 @@ describe("PostgREST query generation", () => {
           .from({ user: usersCollection })
           .where(({ user }) => eq(user.active, true))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&active=eq.true"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&active=eq.true&order=id.asc",
+      ])
     })
 
     test("WHERE id = 1", async () => {
       await queryResult((q) =>
         q.from({ user: usersCollection }).where(({ user }) => eq(user.id, 1))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=eq.1"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&id=eq.1&order=id.asc",
+      ])
     })
 
     test("WHERE name = 'John'", async () => {
@@ -83,35 +87,45 @@ describe("PostgREST query generation", () => {
           .from({ user: usersCollection })
           .where(({ user }) => eq(user.name, "John"))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&name=eq.John"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&name=eq.John&order=id.asc",
+      ])
     })
 
     test("WHERE id > 5 (gt)", async () => {
       await queryResult((q) =>
         q.from({ user: usersCollection }).where(({ user }) => gt(user.id, 5))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=gt.5"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&id=gt.5&order=id.asc",
+      ])
     })
 
     test("WHERE id >= 5 (gte)", async () => {
       await queryResult((q) =>
         q.from({ user: usersCollection }).where(({ user }) => gte(user.id, 5))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=gte.5"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&id=gte.5&order=id.asc",
+      ])
     })
 
     test("WHERE id < 10 (lt)", async () => {
       await queryResult((q) =>
         q.from({ user: usersCollection }).where(({ user }) => lt(user.id, 10))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=lt.10"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&id=lt.10&order=id.asc",
+      ])
     })
 
     test("WHERE id <= 10 (lte)", async () => {
       await queryResult((q) =>
         q.from({ user: usersCollection }).where(({ user }) => lte(user.id, 10))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=lte.10"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&id=lte.10&order=id.asc",
+      ])
     })
 
     test("WHERE id IN (1, 2, 3)", async () => {
@@ -120,7 +134,9 @@ describe("PostgREST query generation", () => {
           .from({ user: usersCollection })
           .where(({ user }) => inArray(user.id, [1, 2, 3]))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=in.(1,2,3)"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&id=in.(1,2,3)&order=id.asc",
+      ])
     })
 
     test("merges IN filters for the same column", async () => {
@@ -131,7 +147,9 @@ describe("PostgREST query generation", () => {
             and(inArray(user.id, [1, 2]), inArray(user.id, [2, 3]))
           )
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=in.(1,2,3)"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&id=in.(1,2,3)&order=id.asc",
+      ])
     })
 
     test("keeps IN filters for different columns separate", async () => {
@@ -143,7 +161,7 @@ describe("PostgREST query generation", () => {
           )
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&id=in.(1,2)&name=in.(Alice,Bob)",
+        "/rest/v1/users?select=*&id=in.(1,2)&name=in.(Alice,Bob)&order=id.asc",
       ])
     })
 
@@ -154,7 +172,7 @@ describe("PostgREST query generation", () => {
           .where(({ user }) => not(eq(user.active, false)))
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&active=not.eq.false",
+        "/rest/v1/users?select=*&active=not.eq.false&order=id.asc",
       ])
     })
 
@@ -164,7 +182,9 @@ describe("PostgREST query generation", () => {
           .from({ user: usersCollection })
           .where(({ user }) => not(gt(user.id, 5)))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=not.gt.5"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&id=not.gt.5&order=id.asc",
+      ])
     })
 
     test("WHERE NOT(id IN (1, 2))", async () => {
@@ -173,7 +193,9 @@ describe("PostgREST query generation", () => {
           .from({ user: usersCollection })
           .where(({ user }) => not(inArray(user.id, [1, 2])))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=not.in.(1,2)"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&id=not.in.(1,2)&order=id.asc",
+      ])
     })
 
     test("a Date value is sent as ISO 8601", async () => {
@@ -186,7 +208,7 @@ describe("PostgREST query generation", () => {
       )
       // `Date.toString()` would produce something Postgres cannot cast.
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&name=gt.2026-01-02T03:04:05.000Z",
+        "/rest/v1/users?select=*&name=gt.2026-01-02T03:04:05.000Z&order=id.asc",
       ])
     })
 
@@ -204,7 +226,7 @@ describe("PostgREST query generation", () => {
       // Each list member goes through quoteValue, which must also render Dates
       // as ISO 8601 rather than the locale string from `Date.toString()`.
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&name=in.(2026-01-02T03:04:05.000Z,2026-02-03T04:05:06.000Z)",
+        "/rest/v1/users?select=*&name=in.(2026-01-02T03:04:05.000Z,2026-02-03T04:05:06.000Z)&order=id.asc",
       ])
     })
 
@@ -212,7 +234,9 @@ describe("PostgREST query generation", () => {
       await queryResult((q) =>
         q.from({ user: usersCollection }).where(({ user }) => isNull(user.name))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&name=is.null"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&name=is.null&order=id.asc",
+      ])
     })
 
     test("WHERE NOT(name IS NULL)", async () => {
@@ -221,7 +245,9 @@ describe("PostgREST query generation", () => {
           .from({ user: usersCollection })
           .where(({ user }) => not(isNull(user.name)))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&name=not.is.null"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&name=not.is.null&order=id.asc",
+      ])
     })
 
     test("a negated condition does not reuse the cache entry of the plain one", async () => {
@@ -236,8 +262,8 @@ describe("PostgREST query generation", () => {
       // Two fetches, not one: a shared query key would have served the second
       // query the first query's rows.
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&id=gt.5",
-        "/rest/v1/users?select=*&id=not.gt.5",
+        "/rest/v1/users?select=*&id=gt.5&order=id.asc",
+        "/rest/v1/users?select=*&id=not.gt.5&order=id.asc",
       ])
     })
 
@@ -248,7 +274,7 @@ describe("PostgREST query generation", () => {
           .where(({ user }) => and(eq(user.active, true), gt(user.id, 5)))
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&active=eq.true&id=gt.5",
+        "/rest/v1/users?select=*&active=eq.true&id=gt.5&order=id.asc",
       ])
     })
 
@@ -260,7 +286,7 @@ describe("PostgREST query generation", () => {
           .where(({ user }) => gt(user.id, 5))
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&active=eq.true&id=gt.5",
+        "/rest/v1/users?select=*&active=eq.true&id=gt.5&order=id.asc",
       ])
     })
 
@@ -271,7 +297,7 @@ describe("PostgREST query generation", () => {
           .where(({ user }) => like(user.name, "%Ali%"))
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&name=like.%25Ali%25",
+        "/rest/v1/users?select=*&name=like.%25Ali%25&order=id.asc",
       ])
     })
 
@@ -282,7 +308,7 @@ describe("PostgREST query generation", () => {
           .where(({ user }) => ilike(user.name, "%ali%"))
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&name=ilike.%25ali%25",
+        "/rest/v1/users?select=*&name=ilike.%25ali%25&order=id.asc",
       ])
     })
 
@@ -293,7 +319,7 @@ describe("PostgREST query generation", () => {
           .where(({ user }) => or(eq(user.active, true), eq(user.id, 1)))
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&or=(active.eq.true,id.eq.1)",
+        "/rest/v1/users?select=*&or=(active.eq.true,id.eq.1)&order=id.asc",
       ])
     })
 
@@ -306,7 +332,7 @@ describe("PostgREST query generation", () => {
           )
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&or=(name.ilike.%25ali%25,email.ilike.%25ali%25)",
+        "/rest/v1/users?select=*&or=(name.ilike.%25ali%25,email.ilike.%25ali%25)&order=id.asc",
       ])
     })
 
@@ -322,7 +348,7 @@ describe("PostgREST query generation", () => {
           )
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&active=eq.true&or=(id.gt.5,name.eq.admin)",
+        "/rest/v1/users?select=*&active=eq.true&or=(id.gt.5,name.eq.admin)&order=id.asc",
       ])
     })
 
@@ -338,7 +364,7 @@ describe("PostgREST query generation", () => {
           )
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&active=eq.true&or=(name.ilike.%25ali%25,email.ilike.%25ali%25)",
+        "/rest/v1/users?select=*&active=eq.true&or=(name.ilike.%25ali%25,email.ilike.%25ali%25)&order=id.asc",
       ])
     })
 
@@ -351,7 +377,7 @@ describe("PostgREST query generation", () => {
           )
       )
       expectFetchUrls(mockFetch, [
-        '/rest/v1/users?select=*&or=(name.ilike."%25a,b%25",email.eq."x,y")',
+        '/rest/v1/users?select=*&or=(name.ilike."%25a,b%25",email.eq."x,y")&order=id.asc',
       ])
     })
 
@@ -362,7 +388,7 @@ describe("PostgREST query generation", () => {
           .where(({ user }) => inArray(user.name, ["plain", "a,b", "c(d)"]))
       )
       expectFetchUrls(mockFetch, [
-        '/rest/v1/users?select=*&name=in.(plain,"a,b","c(d)")',
+        '/rest/v1/users?select=*&name=in.(plain,"a,b","c(d)")&order=id.asc',
       ])
     })
 
@@ -374,7 +400,9 @@ describe("PostgREST query generation", () => {
             and(eq(user.active, true), eq(upper(user.name), "ALICE"))
           )
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&active=eq.true"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&active=eq.true&order=id.asc",
+      ])
     })
 
     test("OR containing an unpushable branch is dropped entirely", async () => {
@@ -385,7 +413,7 @@ describe("PostgREST query generation", () => {
             or(eq(user.active, true), eq(upper(user.name), "ALICE"))
           )
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
   })
 
@@ -396,7 +424,7 @@ describe("PostgREST query generation", () => {
           .from({ user: usersCollection })
           .select(({ user }) => ({ id: user.id, name: user.name }))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
 
     test("field renaming", async () => {
@@ -405,7 +433,7 @@ describe("PostgREST query generation", () => {
           .from({ user: usersCollection })
           .select(({ user }) => ({ userId: user.id, fullName: user.name }))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
 
     test("computed boolean with eq", async () => {
@@ -415,7 +443,7 @@ describe("PostgREST query generation", () => {
           isActive: eq(user.active, true),
         }))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
 
     test("upper(name)", async () => {
@@ -425,7 +453,7 @@ describe("PostgREST query generation", () => {
           upperName: upper(user.name),
         }))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
 
     test("lower(email)", async () => {
@@ -435,7 +463,7 @@ describe("PostgREST query generation", () => {
           lowerEmail: lower(user.email),
         }))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
 
     test("concat(name, ' ', email)", async () => {
@@ -445,7 +473,7 @@ describe("PostgREST query generation", () => {
           nameAndEmail: concat(user.name, " ", user.email),
         }))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
 
     test("length(name)", async () => {
@@ -455,7 +483,7 @@ describe("PostgREST query generation", () => {
           nameLength: length(user.name),
         }))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
 
     test("add(id, 1)", async () => {
@@ -465,7 +493,7 @@ describe("PostgREST query generation", () => {
           idPlusOne: add(user.id, 1),
         }))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
 
     test("coalesce(name, 'Unknown')", async () => {
@@ -475,7 +503,7 @@ describe("PostgREST query generation", () => {
           displayName: coalesce(user.name, "Unknown"),
         }))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
 
     test("spread + computed field", async () => {
@@ -485,7 +513,7 @@ describe("PostgREST query generation", () => {
           highId: gt(user.id, 5),
         }))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
   })
 
@@ -496,7 +524,7 @@ describe("PostgREST query generation", () => {
           .from({ user: usersCollection })
           .select(({ user }) => ({ totalUsers: count(user.id) }))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
 
     test("sum(id)", async () => {
@@ -505,7 +533,7 @@ describe("PostgREST query generation", () => {
           .from({ user: usersCollection })
           .select(({ user }) => ({ sumId: sum(user.id) }))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
 
     test("avg(id)", async () => {
@@ -514,7 +542,7 @@ describe("PostgREST query generation", () => {
           .from({ user: usersCollection })
           .select(({ user }) => ({ avgId: avg(user.id) }))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
 
     test("min(id)", async () => {
@@ -523,7 +551,7 @@ describe("PostgREST query generation", () => {
           .from({ user: usersCollection })
           .select(({ user }) => ({ minId: min(user.id) }))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
 
     test("max(id)", async () => {
@@ -532,7 +560,7 @@ describe("PostgREST query generation", () => {
           .from({ user: usersCollection })
           .select(({ user }) => ({ maxId: max(user.id) }))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
 
     test("multiple aggregates", async () => {
@@ -542,7 +570,7 @@ describe("PostgREST query generation", () => {
           maxId: max(user.id),
         }))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
 
     test("order by $selected/computed field", async () => {
@@ -556,7 +584,7 @@ describe("PostgREST query generation", () => {
           }))
           .orderBy(({ $selected }) => $selected.nameLength, "desc")
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
   })
 
@@ -565,7 +593,7 @@ describe("PostgREST query generation", () => {
       await queryResult((q) =>
         q.from({ user: usersCollection }).groupBy(({ user }) => user.active)
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
 
     test("single column GROUP BY with WHERE", async () => {
@@ -575,7 +603,9 @@ describe("PostgREST query generation", () => {
           .where(({ user }) => eq(user.active, true))
           .groupBy(({ user }) => user.active)
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?active=eq.true&select=*"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?active=eq.true&select=*&order=id.asc",
+      ])
     })
 
     test("multiple columns GROUP BY", async () => {
@@ -584,7 +614,7 @@ describe("PostgREST query generation", () => {
           .from({ user: usersCollection })
           .groupBy(({ user }) => [user.active, user.name])
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
 
     test("GROUP BY + aggregates", async () => {
@@ -598,7 +628,9 @@ describe("PostgREST query generation", () => {
             userCount: count(user.id),
           }))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?active=eq.true&select=*"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?active=eq.true&select=*&order=id.asc",
+      ])
     })
   })
 
@@ -614,7 +646,7 @@ describe("PostgREST query generation", () => {
           }))
           .having(({ user }) => gt(sum(user.id), 10))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
 
     test("HAVING with $selected fields", async () => {
@@ -628,7 +660,7 @@ describe("PostgREST query generation", () => {
           }))
           .having(({ $selected }) => gt($selected.totalCount, 5))
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
   })
 
@@ -637,7 +669,9 @@ describe("PostgREST query generation", () => {
       await queryResult((q) =>
         q.from({ user: usersCollection }).orderBy(({ user }) => user.name)
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=name.asc"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&order=name.asc,id.asc",
+      ])
     })
 
     test("explicit asc", async () => {
@@ -646,7 +680,9 @@ describe("PostgREST query generation", () => {
           .from({ user: usersCollection })
           .orderBy(({ user }) => user.name, "asc")
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=name.asc"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&order=name.asc,id.asc",
+      ])
     })
 
     test("descending", async () => {
@@ -655,7 +691,9 @@ describe("PostgREST query generation", () => {
           .from({ user: usersCollection })
           .orderBy(({ user }) => user.name, "desc")
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=name.desc"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&order=name.desc,id.asc",
+      ])
     })
 
     test("multi-column orderBy", async () => {
@@ -708,7 +746,9 @@ describe("PostgREST query generation", () => {
           .where(({ user }) => eq(user.active, true))
         return q.from({ activeUser: activeUsers })
       })
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&active=eq.true"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&active=eq.true&order=id.asc",
+      ])
     })
   })
 
@@ -721,7 +761,9 @@ describe("PostgREST query generation", () => {
           .where(({ user }) => eq(user.id, 1))
           .findOne()
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&id=eq.1&limit=1"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?select=*&id=eq.1&limit=1&order=id.asc",
+      ])
     })
   })
 
@@ -733,7 +775,7 @@ describe("PostgREST query generation", () => {
           .select(({ user }) => ({ name: user.name }))
           .distinct()
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
 
     test("multi column distinct", async () => {
@@ -743,7 +785,7 @@ describe("PostgREST query generation", () => {
           .select(({ user }) => ({ name: user.name, active: user.active }))
           .distinct()
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
 
     test("distinct with where clause", async () => {
@@ -754,7 +796,9 @@ describe("PostgREST query generation", () => {
           .select(({ user }) => ({ name: user.name }))
           .distinct()
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?active=eq.true&select=*"])
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users?active=eq.true&select=*&order=id.asc",
+      ])
     })
   })
 
@@ -768,7 +812,7 @@ describe("PostgREST query generation", () => {
           .limit(10)
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&active=eq.true&order=name.asc&limit=10",
+        "/rest/v1/users?select=*&active=eq.true&order=name.asc,id.asc&limit=10",
       ])
     })
 
@@ -780,7 +824,7 @@ describe("PostgREST query generation", () => {
           .orderBy(({ user }) => user.name, "desc")
       )
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*&active=eq.true&order=name.desc",
+        "/rest/v1/users?select=*&active=eq.true&order=name.desc,id.asc",
       ])
     })
 
@@ -811,7 +855,7 @@ describe("PostgREST query generation", () => {
           .orderBy(({ $selected }) => $selected.userCount, "desc")
           .limit(10)
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&order=id.asc"])
     })
   })
 
@@ -826,8 +870,8 @@ describe("PostgREST query generation", () => {
       )
 
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users_todos?select=*",
-        "/rest/v1/users?id=in.(user_1)&select=*",
+        "/rest/v1/users_todos?select=*&order=user_id.asc,todo_id.asc",
+        "/rest/v1/users?id=in.(user_1)&select=*&order=id.asc",
       ])
     })
 
@@ -842,8 +886,8 @@ describe("PostgREST query generation", () => {
       )
 
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*",
-        "/rest/v1/users_todos?select=*&user_id=in.(user_1)",
+        "/rest/v1/users?select=*&order=id.asc",
+        "/rest/v1/users_todos?select=*&user_id=in.(user_1)&order=user_id.asc,todo_id.asc",
       ])
     })
 
@@ -859,8 +903,8 @@ describe("PostgREST query generation", () => {
       )
 
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users_todos?select=*",
-        "/rest/v1/users?id=in.(user_1)&select=*",
+        "/rest/v1/users_todos?select=*&order=user_id.asc,todo_id.asc",
+        "/rest/v1/users?id=in.(user_1)&select=*&order=id.asc",
       ])
     })
 
@@ -874,8 +918,8 @@ describe("PostgREST query generation", () => {
       )
 
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*",
-        "/rest/v1/users_todos?select=*&user_id=in.(user_1)",
+        "/rest/v1/users?select=*&order=id.asc",
+        "/rest/v1/users_todos?select=*&user_id=in.(user_1)&order=user_id.asc,todo_id.asc",
       ])
     })
 
@@ -889,8 +933,8 @@ describe("PostgREST query generation", () => {
       )
 
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users_todos?select=*",
-        "/rest/v1/users?id=in.(user_1)&select=*",
+        "/rest/v1/users_todos?select=*&order=user_id.asc,todo_id.asc",
+        "/rest/v1/users?id=in.(user_1)&select=*&order=id.asc",
       ])
     })
 
@@ -904,8 +948,8 @@ describe("PostgREST query generation", () => {
       )
 
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*",
-        "/rest/v1/users_todos?select=*",
+        "/rest/v1/users?select=*&order=id.asc",
+        "/rest/v1/users_todos?select=*&order=user_id.asc,todo_id.asc",
       ])
     })
 
@@ -920,9 +964,9 @@ describe("PostgREST query generation", () => {
       )
 
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*",
-        "/rest/v1/users_todos?select=*&user_id=in.(user_1)",
-        "/rest/v1/todos?id=in.(todo_1)&select=*",
+        "/rest/v1/users?select=*&order=id.asc",
+        "/rest/v1/users_todos?select=*&user_id=in.(user_1)&order=user_id.asc,todo_id.asc",
+        "/rest/v1/todos?id=in.(todo_1)&select=*&order=id.asc",
       ])
     })
 
@@ -942,9 +986,9 @@ describe("PostgREST query generation", () => {
       )
 
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*",
-        "/rest/v1/users_todos?select=*&user_id=in.(user_1)",
-        "/rest/v1/todos?id=in.(todo_1)&select=*",
+        "/rest/v1/users?select=*&order=id.asc",
+        "/rest/v1/users_todos?select=*&user_id=in.(user_1)&order=user_id.asc,todo_id.asc",
+        "/rest/v1/todos?id=in.(todo_1)&select=*&order=id.asc",
       ])
     })
 
@@ -961,8 +1005,8 @@ describe("PostgREST query generation", () => {
       })
 
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*",
-        "/rest/v1/users_todos?select=*&todo_id=gt.0&user_id=in.(user_1)",
+        "/rest/v1/users?select=*&order=id.asc",
+        "/rest/v1/users_todos?select=*&todo_id=gt.0&user_id=in.(user_1)&order=user_id.asc,todo_id.asc",
       ])
     })
 
@@ -976,8 +1020,8 @@ describe("PostgREST query generation", () => {
       })
 
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*",
-        "/rest/v1/users_todos?select=*&user_id=in.(user_1)",
+        "/rest/v1/users?select=*&order=id.asc",
+        "/rest/v1/users_todos?select=*&user_id=in.(user_1)&order=user_id.asc,todo_id.asc",
       ])
     })
 
@@ -1002,8 +1046,8 @@ describe("PostgREST query generation", () => {
       })
 
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*",
-        "/rest/v1/users_todos?select=*&user_id=in.(user_1)",
+        "/rest/v1/users?select=*&order=id.asc",
+        "/rest/v1/users_todos?select=*&user_id=in.(user_1)&order=user_id.asc,todo_id.asc",
       ])
     })
 
@@ -1018,8 +1062,8 @@ describe("PostgREST query generation", () => {
       )
 
       expectFetchUrls(mockFetch, [
-        "/rest/v1/users?select=*",
-        "/rest/v1/users_todos?select=*&user_id=in.(user_1)",
+        "/rest/v1/users?select=*&order=id.asc",
+        "/rest/v1/users_todos?select=*&user_id=in.(user_1)&order=user_id.asc,todo_id.asc",
       ])
     })
   })

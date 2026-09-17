@@ -117,9 +117,11 @@ describe("live infinite query (windowed) pagination", () => {
 
     // The first page is a plain ordered window (one peek row past the page)
     // plus core's boundary probe — no keyset cursor (`gt`) and no offset yet.
+    // An unlimited read sends no limit at all — the server's row cap sizes it —
+    // and carries the key columns as order tie-breakers.
     expect(getSearches(mockFetch)).toEqual([
       "select=*&order=id.asc&limit=3", // window + 1 peek row
-      "select=*&id=eq.3", // boundary probe (loadBoundary) settles the peek
+      "select=*&id=eq.3&order=id.asc", // boundary probe (loadBoundary) settles the peek
     ])
   })
 
@@ -144,10 +146,10 @@ describe("live infinite query (windowed) pagination", () => {
     // with no offset re-skipping rows. No request carries an offset.
     expect(getSearches(mockFetch)).toEqual([
       "select=*&order=id.asc&limit=3", // page 1: window + 1 peek row
-      "select=*&id=eq.3", // boundary probe (loadBoundary) settles the peek
-      "select=*&order=id.asc&id=eq.3", // page 2: whereCurrent tie read
-      "select=*&order=id.asc&limit=2&id=gt.3", // page 2: whereFrom keyset read
-      "select=*&id=eq.5", // boundary probe for the next peek
+      "select=*&id=eq.3&order=id.asc", // boundary probe (loadBoundary) settles the peek
+      "select=*&id=eq.3&order=id.asc", // page 2: whereCurrent tie read (unlimited, not capped by the window limit)
+      "select=*&id=gt.3&order=id.asc&limit=2", // page 2: whereFrom keyset read
+      "select=*&id=eq.5&order=id.asc", // boundary probe for the next peek
     ])
   })
 
@@ -174,18 +176,20 @@ describe("live infinite query (windowed) pagination", () => {
 
     // Same boundary values (rank 20) exercise `whereCurrent`. This test locks
     // the shape the adapter must emit: the tie read (3rd) keeps the order,
-    // filters to the boundary with `eq`, and has no limit; the keyset read (4th)
-    // advances strictly past the boundary with `gt`; neither carries an offset.
+    // filters to the boundary with `eq`, and sends no limit rather than being
+    // capped by the window limit; the keyset read (4th) advances strictly past
+    // the boundary with `gt`; neither carries an offset. The key column `id`
+    // is appended to every order as a tie-breaker so pages are deterministic.
     // (Here id 4 is in fact already loaded by the boundary probe — 2nd read,
     // `rank=eq.20`, no order — which makes the `whereCurrent` read redundant in
     // the window path; see the module note. The adapter emits it regardless
     // because it honors the cursor contract.)
     expect(getSearches(mockFetch)).toEqual([
-      "select=*&order=rank.asc&limit=3", // page 1: window + 1 peek row
-      "select=*&rank=eq.20", // boundary probe (loadBoundary): full tie class
-      "select=*&order=rank.asc&rank=eq.20", // page 2: whereCurrent tie read
-      "select=*&order=rank.asc&limit=1&rank=gt.20", // page 2: whereFrom keyset read
-      "select=*&rank=eq.30", // boundary probe for the next peek
+      "select=*&order=rank.asc,id.asc&limit=3", // page 1: window + 1 peek row
+      "select=*&rank=eq.20&order=id.asc", // boundary probe (loadBoundary): full tie class
+      "select=*&rank=eq.20&order=rank.asc,id.asc", // page 2: whereCurrent tie read
+      "select=*&rank=gt.20&order=rank.asc,id.asc&limit=1", // page 2: whereFrom keyset read
+      "select=*&rank=eq.30&order=id.asc", // boundary probe for the next peek
     ])
   })
 })

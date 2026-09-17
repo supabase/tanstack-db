@@ -137,6 +137,38 @@ const todos = createCollection(
 
 **Returns** a collection options object to pass to `createCollection`.
 
+#### Pagination
+
+Collection reads fetch every row matching a query (or the first `limit` rows,
+if one is set) automatically, with no page-size setting to configure. Requests
+never send a page limit of their own: each one lets PostgREST return as many
+rows as your project's API max-rows setting allows, so that setting alone sizes
+each page. Every request asks PostgREST for the exact matching row count
+(`Prefer: count=exact`); when the count shows more rows remain, the next request
+continues from the last row received, and so on until the whole result has been
+loaded. The tradeoff is one extra count computed by Postgres per request.
+
+Pages after the first are addressed by offset, advanced by the number of rows
+actually received, so the server's row cap never causes the next page to skip or
+repeat rows. The requested sort order is used as-is, with any `keys` columns
+missing from it appended as tie-breakers, so the order is total and pages do not
+overlap. Known limitation: a row deleted by another client between two page
+requests shifts the remaining rows back by one offset, so one row can be missed
+until the query refetches.
+
+Filters, ordering, limits, offsets, and cursor filters apply to every page. A
+failure on any page fails the complete collection load instead of returning
+partial data, and cancelling or superseding the query stops further page
+requests from being issued.
+
+To bound how many rows each page returns, lower the max-rows setting on your
+project's API (PostgREST's `db-max-rows`); the pagination loop adapts to
+whatever the server returns.
+
+Loading thousands of rows into a browser increases network, memory, and parsing
+costs. Prefer selective filters or an explicit query limit when the UI does not
+need the complete matching dataset.
+
 ---
 
 ### `queryOnce(callback, supabase)`
@@ -165,6 +197,8 @@ const completedTodos = await queryOnce(
 Use `queryOnce` when you need a one-shot fetch, such as in server components, API routes, or form submissions where live updates are not needed.
 
 Filters, ordering, `limit`, `offset`, joins, and aggregate functions (`count`, `sum`, `avg`, `min`, `max`) are pushed to PostgREST. Operations that cannot be pushed fall back to fetching matching rows and processing them client-side.
+
+The server aggregate path (queries using aggregates, `groupBy`, or `having`) issues a single request and is not paginated, so its result is capped at your project's PostgREST max-rows setting (`1000` by default). Grouped results have no stable order to page over. If you expect more groups than that, add an explicit `limit` and `orderBy`, or narrow the query with additional filters.
 
 Fallback operations include `GROUP BY`, `HAVING`, `DISTINCT`, and computed `SELECT` expressions.
 

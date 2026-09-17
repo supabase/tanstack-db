@@ -69,7 +69,6 @@ const registerTable = (
   realtimeUseFilter: boolean
 ): TableEntry => {
   ensureQueryCacheSubscription(queryClient)
-  // biome-ignore lint/style/noNonNullAssertion: <explanation>
   const tables = queryClientRegistries.get(queryClient)!
 
   if (!tables.has(tableName)) {
@@ -85,7 +84,6 @@ const registerTable = (
     })
   }
 
-  // biome-ignore lint/style/noNonNullAssertion: <explanation>
   return tables.get(tableName)!
 }
 
@@ -133,7 +131,7 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
     // published. Gating the fetch on the subscription closes this gap but couples
     // every first load to Realtime connect latency, so it is intentionally left
     // out and tracked separately.
-    queryFn: (ctx) => supabaseQueryFn(supabase, tableName, ctx),
+    queryFn: (ctx) => supabaseQueryFn(supabase, tableName, keyColumns, ctx),
     onInsert: (ctx) => supabaseOnInsert(supabase, tableName, ctx),
     onUpdate: (ctx) => supabaseOnUpdate(supabase, tableName, keyColumns, ctx),
     onDelete: (ctx) => supabaseOnDelete(supabase, tableName, keyColumns, ctx),

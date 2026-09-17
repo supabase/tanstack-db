@@ -3,8 +3,17 @@ import {
   appendLimit,
   appendOrder,
   paramsToSearch,
+  type Sort,
   toPostgrestParams,
 } from "./common"
+
+/** Map TanStack's `orderBy` clauses to PostgREST sorts. */
+export function orderByToSorts(orderBy: LoadSubsetOptions["orderBy"]): Sort[] {
+  return parseOrderByExpression(orderBy).map((sort) => ({
+    column: sort.field.join("."),
+    ascending: sort.direction === "asc",
+  }))
+}
 
 /**
  * Encode the params that identify a cached subset — where filters, order, and
@@ -18,13 +27,7 @@ export function subsetParamsToSearch(
 ): URLSearchParams {
   const { where, orderBy, limit } = options
   const search = paramsToSearch(toPostgrestParams(where, { mergeIn: true }))
-  appendOrder(
-    search,
-    parseOrderByExpression(orderBy).map((sort) => ({
-      column: sort.field.join("."),
-      ascending: sort.direction === "asc",
-    }))
-  )
+  appendOrder(search, orderByToSorts(orderBy))
   // `limit: 0` is a real, distinct subset (an empty window). Guard on
   // `undefined`, not falsiness, so it does not collide with the unlimited query
   // on one cache key — otherwise the empty limit-0 result would take over and

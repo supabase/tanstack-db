@@ -29,7 +29,7 @@ describe("query key matches request URL", () => {
     const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
       global: { fetch: mockFetch },
     })
-    await supabaseQueryFn(supabase, "users", {
+    await supabaseQueryFn(supabase, "users", ["id"], {
       client: new QueryClient(),
       queryKey: ["users"],
       signal: new AbortController().signal,
@@ -45,14 +45,14 @@ describe("query key matches request URL", () => {
 })
 
 describe("cursor pagination fetches boundary ties", () => {
-  test("a cursor load issues an unlimited tie request and a limited keyset request", async () => {
+  test("a cursor load issues a tie request unbounded by the caller's limit and a limited keyset request", async () => {
     const id = new IR.PropRef<number>(["id"])
     const mockFetch = createMockFetch()
     const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
       global: { fetch: mockFetch },
     })
 
-    await supabaseQueryFn(supabase, "users", {
+    await supabaseQueryFn(supabase, "users", ["id"], {
       client: new QueryClient(),
       queryKey: ["users"],
       signal: new AbortController().signal,
@@ -77,6 +77,8 @@ describe("cursor pagination fetches boundary ties", () => {
     const ties = urls.find((s) => s.get("id") === "eq.40")
     const keyset = urls.find((s) => s.get("id") === "gt.40")
 
+    // The tie read sends no limit at all — it must load every row at the
+    // boundary, never capped by the caller's limit.
     expect(ties?.has("limit")).toBe(false)
     expect(keyset?.get("limit")).toBe("20")
     // Cursor pins the window; offset must never ride alongside it.

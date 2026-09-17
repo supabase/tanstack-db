@@ -23,14 +23,17 @@ import {
  * Execute a SerializedQueryIR against Supabase and return the results.
  *
  * Produces a single PostgREST request using resource embedding for joins
- * and aggregate syntax for count/sum/avg/min/max.
+ * and aggregate syntax for count/sum/avg/min/max. Unlike collection reads this
+ * path is not paginated: grouped results have no stable order to page over
+ * unless the query sorts them, so the response is capped at the project's
+ * PostgREST max-rows setting.
  */
 export async function executeQuery(
   supabase: SupabaseClient,
   ir: SerializedQueryIR
 ): Promise<unknown[]> {
   const { tableName, search } = queryIrToSearch(ir)
-  const data = await postgrestRequest(supabase, tableName, {
+  const { data } = await postgrestRequest(supabase, tableName, {
     method: "GET",
     search,
   })

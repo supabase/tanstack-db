@@ -19,10 +19,12 @@ interface FilterOptions {
   stripAlias?: boolean
 }
 
+export type Sort = { column: string; ascending: boolean }
+
 /** Set the comma-joined `order` param (independent of limit/offset). */
 export function appendOrder(
   search: URLSearchParams,
-  sorts: Array<{ column: string; ascending: boolean }>
+  sorts: readonly Sort[]
 ): void {
   if (sorts.length === 0) return
   search.set(
