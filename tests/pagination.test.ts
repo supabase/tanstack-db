@@ -269,6 +269,22 @@ describe("db-max-rows paging loop (supabaseQueryFn)", () => {
     ])
   })
 
+  test("a caller offset counts against the total: no trailing empty request", async () => {
+    // Six rows, offset 2, cap 2: rows 3-4 then 5-6 — the count (6) minus the
+    // offset (2) tells the loop it is done after two requests, not three.
+    const SIX = [...ROWS, { id: 6 }]
+    const mockFetch = makePaginatingFetch(SIX, { cap: 2 })
+    const rows = await run(mockFetch, { orderBy: ORDER_BY, offset: 2 })
+
+    expect((rows as Array<{ id: number }>).map((r) => r.id)).toEqual([
+      3, 4, 5, 6,
+    ])
+    expect(getSearches(mockFetch)).toEqual([
+      "select=*&order=id.asc&offset=2",
+      "select=*&order=id.asc&offset=4&limit=2",
+    ])
+  })
+
   test("a set within the cap is a single request", async () => {
     const mockFetch = makePaginatingFetch(ROWS.slice(0, 2), { cap: 2 })
     const rows = await run(mockFetch, { orderBy: ORDER_BY })

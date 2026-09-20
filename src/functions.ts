@@ -93,11 +93,12 @@ async function fetchAllPages(
   // The rows the first page returned size the server's cap; a later page that
   // comes back shorter than this means the server has no more rows.
   const pageSize = rows.length
-  // How many rows we ultimately want: the caller's limit, bounded by the total
-  // the server reported. When the count header is missing we fall back to
-  // paging until a short page appears.
+  // `Content-Range` reports the whole matching set, so the rows reachable from
+  // the starting offset are what remains past it. When the count header is
+  // missing we fall back to paging until a short page appears.
   const total = first.count ?? Number.POSITIVE_INFINITY
-  const target = limit === undefined ? total : Math.min(limit, total)
+  const remaining = Math.max(0, total - startOffset)
+  const target = limit === undefined ? remaining : Math.min(limit, remaining)
 
   let lastPageSize = pageSize
   while (lastPageSize === pageSize && pageSize > 0 && rows.length < target) {
