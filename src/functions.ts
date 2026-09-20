@@ -52,6 +52,71 @@ export const subsetOptionsToQueryKey = (
   return key ? [tableName, key] : [tableName]
 }
 
+type PageOptions = {
+  /** The caller's row limit; `undefined` means "the full matching set". */
+  limit?: number
+  /** The starting offset (always 0 for cursor reads). */
+  offset: number
+  signal?: AbortSignal
+}
+
+/**
+ * Read a full matching set (or the caller's `limit` rows) with offset paging,
+ * looping past PostgREST's `db-max-rows` cap instead of silently truncating at
+ * it. The first request asks for `count=exact` so the loop knows the total up
+ * front and stops without a trailing empty probe; each later page advances the
+ * offset by the rows actually received (self-correcting under concurrent
+ * writes) and is capped by the observed page size and the rows still owed.
+ */
+async function fetchAllPages(
+  supabase: SupabaseClient,
+  tableName: string,
+  baseSearch: URLSearchParams,
+  { limit, offset: startOffset, signal }: PageOptions
+): Promise<any[]> {
+  // A zero limit is an empty window: return it without touching the network.
+  if (limit === 0) {
+    return []
+  }
+
+  // The base search already carries the caller's limit/offset (from the search
+  // builders), so the first request is sent verbatim — its URL stays identical
+  // to the single-request behaviour, and the query key that mirrors it.
+  const first = await postgrestRequest(supabase, tableName, {
+    method: "GET",
+    search: baseSearch,
+    signal,
+    count: "exact",
+  })
+  const rows: any[] = first.data ? [...first.data] : []
+
+  // The rows the first page returned size the server's cap; a later page that
+  // comes back shorter than this means the server has no more rows.
+  const pageSize = rows.length
+  // How many rows we ultimately want: the caller's limit, bounded by the total
+  // the server reported. When the count header is missing we fall back to
+  // paging until a short page appears.
+  const total = first.count ?? Number.POSITIVE_INFINITY
+  const target = limit === undefined ? total : Math.min(limit, total)
+
+  let lastPageSize = pageSize
+  while (lastPageSize === pageSize && pageSize > 0 && rows.length < target) {
+    const pageSearch = new URLSearchParams(baseSearch)
+    pageSearch.set("offset", `${startOffset + rows.length}`)
+    pageSearch.set("limit", `${Math.min(pageSize, target - rows.length)}`)
+    const page = await postgrestRequest(supabase, tableName, {
+      method: "GET",
+      search: pageSearch,
+      signal,
+    })
+    const pageRows: any[] = page.data ?? []
+    rows.push(...pageRows)
+    lastPageSize = pageRows.length
+  }
+
+  return rows
+}
+
 export const supabaseQueryFn = async (
   supabase: SupabaseClient,
   tableName: string,
@@ -66,6 +131,9 @@ export const supabaseQueryFn = async (
 ) => {
   const options = ctx.meta?.loadSubsetOptions ?? {}
   const search = loadSubsetOptionsToSearch(options)
+  // Cursor reads pin their own window start, so they never carry an offset (see
+  // loadSubsetOptionsToSearch); only a cursor-less read advances from `offset`.
+  const startOffset = options.offset && !options.cursor ? options.offset : 0
 
   // A keyset request whose boundary column has ties (e.g. `orderBy(created_at)`
   // with repeated values) needs a second, unlimited request for the rows equal
@@ -80,23 +148,30 @@ export const supabaseQueryFn = async (
   // Honouring `whereCurrent` here is what makes the cursor correct on its own.
   const tiesSearch = cursorCurrentToSearch(options)
   if (!tiesSearch) {
-    const data = await postgrestRequest(supabase, tableName, {
-      method: "GET",
-      search,
+    return await fetchAllPages(supabase, tableName, search, {
+      limit: options.limit,
+      offset: startOffset,
+      signal: ctx.signal,
     })
-    return data || []
   }
 
   const [ties, rows] = await Promise.all([
-    postgrestRequest(supabase, tableName, {
-      method: "GET",
-      search: tiesSearch,
+    // The tie read is deliberately unbounded by the caller's limit — every row
+    // tied at the boundary must come back — but it is still paged so a tie class
+    // larger than the cap is not truncated.
+    fetchAllPages(supabase, tableName, tiesSearch, {
+      offset: 0,
+      signal: ctx.signal,
     }),
-    postgrestRequest(supabase, tableName, { method: "GET", search }),
+    fetchAllPages(supabase, tableName, search, {
+      limit: options.limit,
+      offset: startOffset,
+      signal: ctx.signal,
+    }),
   ])
   // `whereCurrent` (== boundary) and `whereFrom` (> / < boundary) are disjoint,
   // so concatenation never duplicates; the collection re-sorts locally.
-  return [...(ties || []), ...(rows || [])]
+  return [...ties, ...rows]
 }
 
 export const supabaseOnInsert = async (
@@ -106,7 +181,7 @@ export const supabaseOnInsert = async (
 ) => {
   await Promise.all(
     transaction.mutations.map(async (mutation) => {
-      const data = await postgrestRequest(supabase, tableName, {
+      const { data } = await postgrestRequest(supabase, tableName, {
         method: "POST",
         search: new URLSearchParams({ select: "*" }),
         body: { ...mutation.modified },
@@ -136,7 +211,7 @@ export const supabaseOnUpdate = async (
       const { original, changes } = mutation
       const search = keyColumnsToSearch(keys, original)
       search.set("select", "*")
-      const data = await postgrestRequest(supabase, tableName, {
+      const { data } = await postgrestRequest(supabase, tableName, {
         method: "PATCH",
         search,
         body: { ...original, ...changes },

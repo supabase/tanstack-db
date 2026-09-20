@@ -40,3 +40,39 @@ test("queryOnce runs a one-shot filtered query", async ({ users }) => {
   expect(rows).toHaveLength(1)
   expect(rows[0]?.name).toBe("Alice")
 })
+
+test("reads a set larger than the server row cap across pages", async ({
+  users,
+  other,
+}) => {
+  // config.toml caps responses at 2 rows; reset_e2e seeds Alice + Bob, so three
+  // more rows push the matching set past the cap and force the paging loop.
+  const { error } = await other.from("users").insert([
+    { name: "Carol", email: "carol@test.com", active: true },
+    { name: "Dave", email: "dave@test.com", active: true },
+    { name: "Erin", email: "erin@test.com", active: true },
+  ] as unknown as never)
+  expect(error).toBeNull()
+
+  const live = createLiveQueryCollection((q) =>
+    q
+      .from({ row: users.collection })
+      .select(({ row }) => ({ id: row.id, name: row.name }))
+  )
+
+  try {
+    await live.preload()
+    await vi.waitFor(() => expect(live.size).toBe(5), WAIT)
+    // The full set comes back despite the cap, with each row exactly once.
+    expect(live.toArray.map((row) => row.name).sort()).toEqual([
+      "Alice",
+      "Bob",
+      "Carol",
+      "Dave",
+      "Erin",
+    ])
+    expect(new Set(live.toArray.map((row) => row.id)).size).toBe(5)
+  } finally {
+    await live.cleanup()
+  }
+})

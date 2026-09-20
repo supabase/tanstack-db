@@ -3,9 +3,12 @@ import {
   createCollection,
   createLiveQueryCollection,
   createLiveQueryWindowController,
+  IR,
 } from "@tanstack/db"
-import { afterEach, beforeEach, describe, expect, test } from "vitest"
+import { QueryClient } from "@tanstack/query-core"
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { z } from "zod"
+import { supabaseQueryFn } from "../src/functions"
 import { supabaseCollectionOptions } from "../src/index"
 import { getSearches, makePaginatingFetch } from "./pagination.utils"
 import { SUPABASE_KEY, SUPABASE_URL } from "./test.utils"
@@ -187,5 +190,157 @@ describe("live infinite query (windowed) pagination", () => {
       "select=*&order=rank.asc&limit=1&rank=gt.20", // page 2: whereFrom keyset read
       "select=*&rank=eq.30", // boundary probe for the next peek
     ])
+  })
+})
+
+// A collection load with no windowing (a plain subscribe, or a `queryOnce`)
+// issues a single `supabaseQueryFn` call that must return the FULL matching set,
+// looping past PostgREST's `db-max-rows` cap instead of truncating at it.
+describe("db-max-rows paging loop (supabaseQueryFn)", () => {
+  // Ordered fixture the capped mock pages through.
+  const ROWS = [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }, { id: 5 }]
+
+  const ORDER_BY = [
+    {
+      expression: new IR.PropRef<number>(["id"]),
+      compareOptions: { direction: "asc" as const, nulls: "last" as const },
+    },
+  ]
+
+  const prefer = (call: unknown[]): string =>
+    new Headers((call[1] as RequestInit)?.headers).get("prefer") ?? ""
+
+  const run = (
+    mockFetch: ReturnType<typeof makePaginatingFetch>,
+    loadSubsetOptions: Record<string, unknown>,
+    signal: AbortSignal = new AbortController().signal
+  ) => {
+    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      global: { fetch: mockFetch },
+    })
+    return supabaseQueryFn(supabase, "items", {
+      client: new QueryClient(),
+      queryKey: ["items"],
+      signal,
+      meta: { loadSubsetOptions } as never,
+    })
+  }
+
+  test("pages through the whole set when it exceeds the server cap", async () => {
+    const mockFetch = makePaginatingFetch(ROWS, { cap: 2 })
+    const rows = await run(mockFetch, { orderBy: ORDER_BY })
+
+    // Every row returned exactly once, in order.
+    expect((rows as Array<{ id: number }>).map((r) => r.id)).toEqual([
+      1, 2, 3, 4, 5,
+    ])
+    // The first request has no artificial page-size limit — the cap sizes it —
+    // and each later page advances the offset by the rows received, capped by
+    // the rows still owed (the last page asks for just 1).
+    expect(getSearches(mockFetch)).toEqual([
+      "select=*&order=id.asc",
+      "select=*&order=id.asc&offset=2&limit=2",
+      "select=*&order=id.asc&offset=4&limit=1",
+    ])
+  })
+
+  test("requests count=exact on the first page only", async () => {
+    const mockFetch = makePaginatingFetch(ROWS, { cap: 2 })
+    await run(mockFetch, { orderBy: ORDER_BY })
+
+    const prefers = mockFetch.mock.calls.map(prefer)
+    expect(prefers[0]).toContain("count=exact")
+    for (const p of prefers.slice(1)) {
+      expect(p).not.toContain("count=")
+    }
+  })
+
+  test("an exact multiple of the cap needs no trailing empty request", async () => {
+    const mockFetch = makePaginatingFetch(ROWS.slice(0, 4), { cap: 2 })
+    const rows = await run(mockFetch, { orderBy: ORDER_BY })
+
+    expect((rows as Array<{ id: number }>).map((r) => r.id)).toEqual([
+      1, 2, 3, 4,
+    ])
+    // Two requests, not three: the count tells the loop it is done at offset 4.
+    expect(getSearches(mockFetch)).toEqual([
+      "select=*&order=id.asc",
+      "select=*&order=id.asc&offset=2&limit=2",
+    ])
+  })
+
+  test("a set within the cap is a single request", async () => {
+    const mockFetch = makePaginatingFetch(ROWS.slice(0, 2), { cap: 2 })
+    const rows = await run(mockFetch, { orderBy: ORDER_BY })
+
+    expect((rows as Array<{ id: number }>).map((r) => r.id)).toEqual([1, 2])
+    expect(getSearches(mockFetch)).toEqual(["select=*&order=id.asc"])
+  })
+
+  test("the loop owns limit: a caller limit above the cap still pages", async () => {
+    const mockFetch = makePaginatingFetch(ROWS, { cap: 2 })
+    const rows = await run(mockFetch, { orderBy: ORDER_BY, limit: 3 })
+
+    // Exactly the caller's 3 rows, fetched across cap-sized pages.
+    expect((rows as Array<{ id: number }>).map((r) => r.id)).toEqual([1, 2, 3])
+    expect(getSearches(mockFetch)).toEqual([
+      "select=*&order=id.asc&limit=3",
+      "select=*&order=id.asc&limit=1&offset=2",
+    ])
+  })
+
+  test("limit: 0 returns an empty set with zero requests", async () => {
+    const mockFetch = makePaginatingFetch(ROWS, { cap: 2 })
+    const rows = await run(mockFetch, { orderBy: ORDER_BY, limit: 0 })
+
+    expect(rows).toEqual([])
+    expect(mockFetch).not.toHaveBeenCalled()
+  })
+
+  test("threads the abort signal to every request", async () => {
+    const mockFetch = makePaginatingFetch(ROWS, { cap: 2 })
+    const signal = new AbortController().signal
+    await run(mockFetch, { orderBy: ORDER_BY }, signal)
+
+    expect(mockFetch.mock.calls.length).toBeGreaterThan(1)
+    for (const call of mockFetch.mock.calls) {
+      expect((call[1] as RequestInit).signal).toBe(signal)
+    }
+  })
+
+  test("one failed page fails the whole load (no partial data)", async () => {
+    let calls = 0
+    const failingFetch = vi.fn<typeof fetch>().mockImplementation(() => {
+      calls += 1
+      if (calls === 1) {
+        return Promise.resolve(
+          new Response(JSON.stringify([{ id: 1 }, { id: 2 }]), {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "content-range": "0-1/5",
+            },
+          })
+        )
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({ message: "boom" }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        })
+      )
+    })
+    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      global: { fetch: failingFetch },
+    })
+
+    await expect(
+      supabaseQueryFn(supabase, "items", {
+        client: new QueryClient(),
+        queryKey: ["items"],
+        signal: new AbortController().signal,
+        meta: { loadSubsetOptions: { orderBy: ORDER_BY } } as never,
+      })
+    ).rejects.toBeDefined()
   })
 })

@@ -30,7 +30,10 @@ export async function executeQuery(
   ir: SerializedQueryIR
 ): Promise<unknown[]> {
   const { tableName, search } = queryIrToSearch(ir)
-  const data = await postgrestRequest(supabase, tableName, {
+  // The aggregate / groupBy / having path stays a single request: aggregate
+  // output is a handful of rows, so the db-max-rows cap does not apply and no
+  // paging loop is needed here.
+  const { data } = await postgrestRequest(supabase, tableName, {
     method: "GET",
     search,
   })

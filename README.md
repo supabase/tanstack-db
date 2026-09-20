@@ -188,6 +188,12 @@ Most query operations are translated to PostgREST filters and run server-side. A
 
 The client-side filter fallback above applies to live queries and ordinary `queryOnce` queries. The server aggregate path in `queryOnce` requires fully pushable `WHERE` expressions and throws for unsupported filters, rather than returning an aggregate over unfiltered rows.
 
+### Row cap and pagination
+
+PostgREST caps every response at its `db-max-rows` setting (1000 by default on Supabase). Collection reads and non-aggregate `queryOnce` queries page past this cap automatically: the adapter loops with `offset`, using a one-time `count=exact` on the first request to fetch the complete matching set (or the caller's `limit`).
+
+The **aggregate / `GROUP BY` / `HAVING`** path of `queryOnce` is the one exception — it issues a single request and is **not** paginated. Aggregate results are a few rows, so the cap is moot, but a `GROUP BY` / `HAVING` query whose grouped output exceeds `db-max-rows` is silently truncated at the cap. Add an explicit `limit`, or narrow the query, if you expect more grouped rows than the cap.
+
 **Evaluated Client-Side**
 
 These operations fetch the required rows and process them in memory:

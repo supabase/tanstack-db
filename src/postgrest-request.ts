@@ -8,13 +8,28 @@ const SINGLE_ROW_ACCEPT = "application/vnd.pgrst.object+json"
 interface PostgrestRequestOptions {
   /** JSON body for insert/update. */
   body?: unknown
+  /**
+   * Ask PostgREST for the total matching-row count (`Prefer: count=…`). The
+   * count is read back off the `Content-Range` header; the paging loop uses it
+   * to fetch a set larger than the server's `db-max-rows` cap without probing.
+   */
+  count?: "exact" | "planned" | "estimated"
   method: "GET" | "POST" | "PATCH" | "DELETE"
   /** Ask PostgREST to return the affected rows (`Prefer: return=representation`). */
   returnRows?: boolean
   /** The full query string, built by the params helpers. */
   search: URLSearchParams
+  /** Abort signal, threaded from the query's `ctx.signal`. */
+  signal?: AbortSignal
   /** Expect exactly one row (`Accept: application/vnd.pgrst.object+json`). */
   single?: boolean
+}
+
+/** A PostgREST read result: the rows plus the total count when one was asked for. */
+export interface PostgrestResult {
+  /** Total matching rows when `count` was requested, else `null`. */
+  count: number | null
+  data: any
 }
 
 /**
@@ -33,8 +48,16 @@ interface PostgrestRequestOptions {
 export async function postgrestRequest(
   supabase: SupabaseClient,
   table: string,
-  { method, search, body, returnRows, single }: PostgrestRequestOptions
-): Promise<any> {
+  {
+    method,
+    search,
+    body,
+    returnRows,
+    single,
+    count,
+    signal,
+  }: PostgrestRequestOptions
+): Promise<PostgrestResult> {
   const queryBuilder = supabase.from(table)
 
   const url = new URL(queryBuilder.url.toString())
@@ -44,6 +67,9 @@ export async function postgrestRequest(
   headers.set(CLIENT_INFO_HEADER, CLIENT_INFO)
   if (returnRows) {
     headers.append("Prefer", "return=representation")
+  }
+  if (count) {
+    headers.append("Prefer", `count=${count}`)
   }
   if (single) {
     headers.set("Accept", SINGLE_ROW_ACCEPT)
@@ -56,11 +82,14 @@ export async function postgrestRequest(
     schema: queryBuilder.schema,
     body,
     fetch: queryBuilder.fetch,
+    // The builder threads its own `signal` straight into the underlying fetch,
+    // so aborting the query cancels the in-flight request.
+    signal,
   })
 
-  const { data, error } = await builder
+  const { data, error, count: total } = await builder
   if (error) {
     throw error
   }
-  return data
+  return { data, count: total ?? null }
 }
