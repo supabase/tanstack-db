@@ -1,8 +1,10 @@
+import { PostgrestError } from "@supabase/postgrest-js"
 import { createClient } from "@supabase/supabase-js"
 import { and, eq, gt, IR } from "@tanstack/db"
 import { QueryClient } from "@tanstack/query-core"
-import { describe, expect, test } from "vitest"
+import { describe, expect, test, vi } from "vitest"
 import { subsetOptionsToQueryKey, supabaseQueryFn } from "../src/functions"
+import { postgrestRequest } from "../src/postgrest-request"
 import { createMockFetch, SUPABASE_KEY, SUPABASE_URL } from "./test.utils"
 
 describe("request-state escape hatch", () => {
@@ -81,5 +83,40 @@ describe("cursor pagination fetches boundary ties", () => {
     expect(keyset?.get("limit")).toBe("20")
     // Cursor pins the window; offset must never ride alongside it.
     expect(keyset?.has("offset")).toBe(false)
+  })
+})
+
+describe("postgrest errors are thrown as Error instances", () => {
+  test("a failed request throws a PostgrestError with the message preserved", async () => {
+    const errorBody = {
+      message: "permission denied for table users",
+      details: "insufficient privilege",
+      hint: null,
+      code: "42501",
+    }
+    const mockFetch = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(errorBody), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      })
+    )
+    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      global: { fetch: mockFetch },
+    })
+
+    const promise = postgrestRequest(supabase, "users", {
+      method: "GET",
+      search: new URLSearchParams(),
+    })
+
+    await expect(promise).rejects.toBeInstanceOf(PostgrestError)
+    await expect(promise).rejects.toMatchObject({
+      message: "permission denied for table users",
+      code: "42501",
+    })
+    // The original bug: throwing a plain object stringified to "[object Object]".
+    await expect(promise).rejects.toSatisfy((e: unknown) =>
+      String(e).includes("permission denied")
+    )
   })
 })

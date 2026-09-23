@@ -1,5 +1,5 @@
 /* biome-ignore-all lint/suspicious/noExplicitAny: PostgrestFilterBuilder's generics require database schema types unavailable without codegen; they are irrelevant here since we only read `data`/`error` off the awaited response */
-import { PostgrestFilterBuilder } from "@supabase/postgrest-js"
+import { PostgrestError, PostgrestFilterBuilder } from "@supabase/postgrest-js"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { CLIENT_INFO, CLIENT_INFO_HEADER } from "./request-headers"
 
@@ -60,7 +60,7 @@ export async function postgrestRequest(
 
   const { data, error } = await builder
   if (error) {
-    throw error
+    throw error instanceof Error ? error : new PostgrestError(error)
   }
   return data
 }
