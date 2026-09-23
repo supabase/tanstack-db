@@ -27,6 +27,7 @@ import {
 import { afterEach, beforeEach, describe, expect, test } from "vitest"
 import { queryOnce } from "../src/index"
 import { VERSION } from "../src/version"
+import { makePaginatingFetch } from "./pagination.utils"
 import {
   createMockedTodosCollection,
   createMockedUsersCollection,
@@ -1095,5 +1096,57 @@ describe("queryOnce PostgREST query generation", () => {
         "/rest/v1/users_todos?select=*&todo_id=gt.0&user_id=in.(user_1)",
       ])
     })
+  })
+})
+
+describe("queryOnce pagination", () => {
+  // Five users behind a mock whose server cap is 2 rows per request.
+  const USERS = [
+    { id: 1, name: "A", email: "a@t", active: true },
+    { id: 2, name: "B", email: "b@t", active: true },
+    { id: 3, name: "C", email: "c@t", active: true },
+    { id: 4, name: "D", email: "d@t", active: true },
+    { id: 5, name: "E", email: "e@t", active: true },
+  ]
+
+  test("a non-aggregate queryOnce returns the full multi-page set", async () => {
+    // Non-aggregate queryOnce loads its source collection through the same
+    // supabaseQueryFn as live queries, so it inherits the db-max-rows paging
+    // loop for free — the full set comes back despite the cap.
+    const mockFetch = makePaginatingFetch(USERS, { cap: 2 })
+    const users = createMockedUsersCollection(mockFetch)
+    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      global: { fetch: mockFetch },
+    })
+
+    const rows = await queryOnce((q) => q.from({ user: users }), supabase)
+
+    expect(
+      (rows as Array<{ id: number }>).map((r) => r.id).sort((a, b) => a - b)
+    ).toEqual([1, 2, 3, 4, 5])
+
+    await users.cleanup()
+  })
+
+  test("an aggregate queryOnce stays a single executeQuery request", async () => {
+    // The aggregate / groupBy / having path bypasses supabaseQueryFn, so it does
+    // NOT paginate: exactly one request is issued.
+    const mockFetch = makePaginatingFetch(USERS, { cap: 2 })
+    const users = createMockedUsersCollection(mockFetch)
+    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      global: { fetch: mockFetch },
+    })
+
+    await queryOnce(
+      (q) => q.from({ user: users }).groupBy(({ user }) => user.active),
+      supabase
+    )
+
+    const gets = mockFetch.mock.calls.filter(
+      (call) => (call[1]?.method ?? "GET") === "GET"
+    )
+    expect(gets).toHaveLength(1)
+
+    await users.cleanup()
   })
 })

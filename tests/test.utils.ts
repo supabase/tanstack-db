@@ -65,11 +65,28 @@ export function createMockFetch() {
       )
     }
 
-    const response = mockResponses[table] ?? []
+    const all = mockResponses[table] ?? []
+    // Honour offset/limit so the pagination loop's follow-up pages terminate
+    // (a page past the data returns empty) instead of re-serving the same rows.
+    const params = url.searchParams
+    const offset = params.get("offset") ? Number(params.get("offset")) : 0
+    const limit = params.get("limit")
+    const rows = all.slice(
+      offset,
+      limit === null ? undefined : offset + Number(limit)
+    )
+    const end = offset + rows.length - 1
     return Promise.resolve(
-      new Response(JSON.stringify(response), {
+      new Response(JSON.stringify(rows), {
         status: 200,
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          // The loop reads the total off Content-Range to size its paging; the
+          // format mirrors PostgREST's `<start>-<end>/<total>`.
+          "content-range": rows.length
+            ? `${offset}-${end}/${all.length}`
+            : `*/${all.length}`,
+        },
       })
     )
   })

@@ -188,6 +188,18 @@ Most query operations are translated to PostgREST filters and run server-side. A
 
 The client-side filter fallback above applies to live queries and ordinary `queryOnce` queries. The server aggregate path in `queryOnce` requires fully pushable `WHERE` expressions and throws for unsupported filters, rather than returning an aggregate over unfiltered rows.
 
+### Row cap and pagination
+
+PostgREST caps every response at its `db-max-rows` setting (1000 by default on Supabase). Collection reads and non-aggregate `queryOnce` queries page past this cap automatically: the adapter loops with `offset`, using a one-time `count=exact` on the first request to fetch the complete matching set (or the caller's `limit`).
+
+The **aggregate / `GROUP BY` / `HAVING`** path of `queryOnce` is the one exception — it issues a single request and is **not** paginated. Aggregate results are a few rows, so the cap is moot, but a `GROUP BY` / `HAVING` query whose grouped output exceeds `db-max-rows` is silently truncated at the cap. Add an explicit `limit`, or narrow the query, if you expect more grouped rows than the cap.
+
+Known limitations of the paging loop:
+
+- **Ordering.** Pages are stitched together with `offset`, and PostgreSQL does not guarantee a consistent row order across separate `LIMIT`/`OFFSET` queries unless the sort is total. A read with no `orderBy`, or one ordered on a non-unique column, can skip or repeat rows across page boundaries. Order by a unique column (or include the primary key as a final sort key) when a collection is expected to exceed the cap.
+- **Concurrent writes.** Offset paging is not keyset-stable: a row inserted or deleted by another client while a multi-page read is in flight shifts the remaining rows by one offset, so a row can be missed or duplicated until the next refetch.
+- **Count cost.** Every collection read issues one `Prefer: count=exact` on its first request so the loop knows when to stop. On very large tables, or under heavy RLS, that is a full `count(*)` per read.
+
 **Evaluated Client-Side**
 
 These operations fetch the required rows and process them in memory:
