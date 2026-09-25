@@ -1,7 +1,7 @@
 {
   "name": "@supabase-labs/tanstack-db",
   "type": "module",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Connect your Supabase database to TanStack DB.",
   "author": "Supabase <support@supabase.com>",
   "license": "MIT",
