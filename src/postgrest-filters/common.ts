@@ -52,7 +52,7 @@ export function paramsToSearch(params: PostgrestParam[]): URLSearchParams {
   return search
 }
 
-function flattenAnd(expr: Expression): Expression[] {
+export function flattenAnd(expr: Expression): Expression[] {
   return expr.type === "func" && expr.name === "and"
     ? expr.args.flatMap(flattenAnd)
     : [expr]
@@ -168,7 +168,7 @@ function toFilterString(
 // Preserve the live adapter's union of duplicate IN demands. This deliberately
 // fetches a superset, which TanStack re-filters. Never do this inside OR/NOT or
 // for server aggregates, where client-side filtering cannot repair the result.
-function mergeInFilters(filters: Expression[]): Expression[] {
+export function mergeInFilters(filters: Expression[]): Expression[] {
   const merged: Expression[] = []
   const valuesByField = new Map<string, unknown[]>()
   for (const filter of filters) {

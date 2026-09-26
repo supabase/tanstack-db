@@ -200,6 +200,14 @@ Known limitations of the paging loop:
 - **Concurrent writes.** Offset paging is not keyset-stable: a row inserted or deleted by another client while a multi-page read is in flight shifts the remaining rows by one offset, so a row can be missed or duplicated until the next refetch.
 - **Count cost.** Every collection read issues one `Prefer: count=exact` on its first request so the loop knows when to stop. On very large tables, or under heavy RLS, that is a full `count(*)` per read.
 
+### Oversized `IN` lists
+
+Every read is a PostgREST `GET`, so every filter — including a large `inArray(...)`, the shape a lazy join's on-demand collection produces for its join keys — lives in the query string. Supabase's API gateway rejects request lines over about 8 KB with `414 URI Too Long`, and postgrest-js's own `urlLengthLimit` (default 8000) is purely diagnostic: it only adds a hint to the error, it never splits or reroutes the request.
+
+This adapter does the splitting itself. When a `loadSubset`'s rendered URL would exceed a fixed 8000-character budget (matching postgrest-js's own `urlLengthLimit` default), it slices the request's largest top-level `inArray(...)` filter into several disjoint requests that each fit, runs them with a concurrency cap, and concatenates the results. This is transparent to the rest of the collection: the query key stays the full, unchunked subset, so one query still owns every row it returns, and `useLiveQuery` code needs no changes.
+
+Only a positive, top-level AND-ed `inArray(...)` is ever split — never a `not(inArray(...))`, and never one nested inside an `or(...)`, since chunking either would change which rows the union of requests matches. When no such filter exists, or the subset still cannot be made to fit, the request is sent as-is and the server's response (success or error) surfaces exactly as it would without this adapter.
+
 **Evaluated Client-Side**
 
 These operations fetch the required rows and process them in memory:

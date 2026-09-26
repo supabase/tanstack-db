@@ -6,4 +6,8 @@ export {
 } from "./load-subset-options-to-search"
 export { queryIrToSearch } from "./query-ir-to-search"
 export { realtimeFiltersToSearch } from "./realtime-filters-to-search"
+export {
+  type SplitLoadSubsetOptionsConfig,
+  splitLoadSubsetOptions,
+} from "./split-load-subset-options"
 export { subsetParamsToSearch } from "./subset-params-to-search"
