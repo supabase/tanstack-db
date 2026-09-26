@@ -10,11 +10,18 @@ const COMPARATORS: Record<string, (a: number, b: number) => boolean> = {
   eq: (a, b) => a === b,
 }
 
+// Parses `in.(1,2,3)`'s value half (`(1,2,3)`) into its member list. Numeric
+// ids are all the split-chunk tests need, so members are compared as numbers.
+function parseInList(value: string): number[] {
+  const inner = value.replace(/^\(/, "").replace(/\)$/, "")
+  return inner === "" ? [] : inner.split(",").map(Number)
+}
+
 /**
  * A mock `fetch` that serves a fixture like PostgREST would for the read paths
  * the pagination adapter emits: single-column `order`, `limit`, `offset`, and
- * `col=op.value` scalar filters (`gt`/`gte`/`lt`/`lte`/`eq`). Non-GET requests
- * echo their body back so inserts/updates parse.
+ * `col=op.value` scalar filters (`gt`/`gte`/`lt`/`lte`/`eq`/`in`). Non-GET
+ * requests echo their body back so inserts/updates parse.
  *
  * `cap` simulates PostgREST's `db-max-rows`: no response ever returns more than
  * `cap` rows, even when a larger `limit` is requested, while the Content-Range
@@ -39,6 +46,11 @@ export function makePaginatingFetch(
     for (const column of columns) {
       for (const raw of params.getAll(column)) {
         const [op, value] = raw.split(/\.(.*)/s)
+        if (op === "in") {
+          const members = new Set(parseInList(value))
+          rows = rows.filter((r) => members.has(Number(r[column])))
+          continue
+        }
         const compare = COMPARATORS[op]
         if (compare) {
           const target = Number(value)
@@ -95,4 +107,17 @@ export function getSearches(
     .map((call) =>
       decodeURIComponent(new URL(String(call[0])).search).replace(/^\?/, "")
     )
+}
+
+/**
+ * The rendered (percent-encoded) URL of every GET the mock captured, in
+ * order — what actually crosses the wire, and so what a request-line budget
+ * is measured against.
+ */
+export function getRawUrls(
+  mockFetch: ReturnType<typeof makePaginatingFetch>
+): string[] {
+  return mockFetch.mock.calls
+    .filter((call) => (call[1]?.method ?? "GET") === "GET")
+    .map((call) => String(call[0]))
 }

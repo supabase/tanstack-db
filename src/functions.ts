@@ -11,6 +11,7 @@ import {
   cursorWhereFromToSearch,
   keyColumnsToSearch,
   loadSubsetOptionsToSearch,
+  splitLoadSubsetOptions,
   subsetParamsToSearch,
 } from "./postgrest-filters"
 import { postgrestRequest } from "./postgrest-request"
@@ -58,6 +59,8 @@ type PageOptions = {
   /** The starting offset (always 0 for cursor reads). */
   offset: number
   signal?: AbortSignal
+  /** Threaded through to postgrest-js's own request-line length diagnostic. */
+  urlLengthLimit: number
 }
 
 /**
@@ -72,7 +75,7 @@ async function fetchAllPages(
   supabase: SupabaseClient,
   tableName: string,
   baseSearch: URLSearchParams,
-  { limit, offset: startOffset, signal }: PageOptions
+  { limit, offset: startOffset, signal, urlLengthLimit }: PageOptions
 ): Promise<any[]> {
   // A zero limit is an empty window: return it without touching the network.
   if (limit === 0) {
@@ -87,6 +90,7 @@ async function fetchAllPages(
     search: baseSearch,
     signal,
     count: "exact",
+    urlLengthLimit,
   })
   const rows: any[] = first.data ? [...first.data] : []
 
@@ -109,6 +113,7 @@ async function fetchAllPages(
       method: "GET",
       search: pageSearch,
       signal,
+      urlLengthLimit,
     })
     const pageRows: any[] = page.data ?? []
     rows.push(...pageRows)
@@ -118,19 +123,19 @@ async function fetchAllPages(
   return rows
 }
 
-export const supabaseQueryFn = async (
+/**
+ * Read one already-in-budget subset's full window: the keyset tie request (if
+ * any) plus the main paged request. This is the entire body `supabaseQueryFn`
+ * used to run directly; it is now also what runs once per chunk when
+ * `splitLoadSubsetOptions` had to split an oversized subset into several.
+ */
+async function loadWindow(
   supabase: SupabaseClient,
   tableName: string,
-  ctx: {
-    client: QueryClient
-    queryKey: readonly unknown[]
-    signal: AbortSignal
-    meta: QueryMeta | undefined
-    pageParam?: unknown
-    direction?: unknown
-  }
-) => {
-  const options = ctx.meta?.loadSubsetOptions ?? {}
+  options: LoadSubsetOptions,
+  signal: AbortSignal,
+  urlLengthLimit: number
+) {
   const search = loadSubsetOptionsToSearch(options)
   // Cursor reads pin their own window start, so they never carry an offset (see
   // loadSubsetOptionsToSearch); only a cursor-less read advances from `offset`.
@@ -152,7 +157,8 @@ export const supabaseQueryFn = async (
     return await fetchAllPages(supabase, tableName, search, {
       limit: options.limit,
       offset: startOffset,
-      signal: ctx.signal,
+      signal,
+      urlLengthLimit,
     })
   }
 
@@ -162,17 +168,161 @@ export const supabaseQueryFn = async (
     // larger than the cap is not truncated.
     fetchAllPages(supabase, tableName, tiesSearch, {
       offset: 0,
-      signal: ctx.signal,
+      signal,
+      urlLengthLimit,
     }),
     fetchAllPages(supabase, tableName, search, {
       limit: options.limit,
       offset: startOffset,
-      signal: ctx.signal,
+      signal,
+      urlLengthLimit,
     }),
   ])
   // `whereCurrent` (== boundary) and `whereFrom` (> / < boundary) are disjoint,
   // so concatenation never duplicates; the collection re-sorts locally.
   return [...ties, ...rows]
+}
+
+// PostgREST has no body-carried filters for reads and the Supabase API gateway
+// rejects request lines over about 8 KB, so a big `inArray(...)` predicate
+// (the common shape a lazy join's on-demand collection produces) can make a
+// subset's URL too long to send. This default mirrors postgrest-js's own
+// `urlLengthLimit` default so, absent an override, the two agree on what
+// counts as "too long".
+const DEFAULT_URL_LENGTH_LIMIT = 8000
+
+// At most this many chunk requests run at once; splitting a large IN list can
+// produce far more chunks than are worth having in flight simultaneously.
+const MAX_CONCURRENT_CHUNKS = 6
+
+/**
+ * The request-line budget chunks are measured against: the collection's own
+ * `maxUrlLength` option, else whatever `urlLengthLimit` the table's own
+ * `PostgrestQueryBuilder` already carries (itself 8000 unless the caller
+ * configured the Supabase client differently), else the hard-coded default.
+ * Reading it off `supabase.from(tableName)` keeps this budget in agreement
+ * with the diagnostic threshold `postgrestRequest` passes to postgrest-js for
+ * the same table.
+ */
+function resolveUrlLengthLimit(
+  supabase: SupabaseClient,
+  tableName: string,
+  maxUrlLength: number | undefined
+): number {
+  if (maxUrlLength !== undefined) {
+    return maxUrlLength
+  }
+  const builderLimit = supabase.from(tableName).urlLengthLimit
+  return typeof builderLimit === "number"
+    ? builderLimit
+    : DEFAULT_URL_LENGTH_LIMIT
+}
+
+/**
+ * The length of the longest URL a subset would produce: the base table URL
+ * plus the main request's query string, and — when the subset has a cursor —
+ * the unlimited `whereCurrent` tie request's query string too, since
+ * `loadWindow` sends both for a cursor read. Measuring rendered URLs (rather
+ * than estimating) accounts for quoting and percent-encoding exactly.
+ */
+function measureSubset(
+  supabase: SupabaseClient,
+  tableName: string,
+  options: LoadSubsetOptions
+): number {
+  const base = supabase.from(tableName).url.toString().length
+  const mainLength = base + loadSubsetOptionsToSearch(options).toString().length
+  const tiesSearch = cursorCurrentToSearch(options)
+  return tiesSearch
+    ? Math.max(mainLength, base + tiesSearch.toString().length)
+    : mainLength
+}
+
+/**
+ * Runs one `loadWindow` per chunk with at most `MAX_CONCURRENT_CHUNKS` in
+ * flight at a time, and concatenates their rows. Chunks are disjoint on the
+ * split column (see `splitLoadSubsetOptions`), so concatenation order does not
+ * matter and needs no dedupe.
+ *
+ * On the first failure, every other chunk's request is aborted through a
+ * local `AbortController` combined with the caller's own signal
+ * (`AbortSignal.any`) — this keeps the same all-or-nothing semantics an
+ * unsplit request has ("one failed page fails the whole load") instead of
+ * surfacing a partial result, and the first error encountered is what
+ * `Promise.all` rejects with.
+ */
+async function loadChunks(
+  supabase: SupabaseClient,
+  tableName: string,
+  chunks: LoadSubsetOptions[],
+  signal: AbortSignal,
+  urlLengthLimit: number
+): Promise<any[]> {
+  const controller = new AbortController()
+  const combinedSignal = AbortSignal.any([signal, controller.signal])
+  const results: any[][] = new Array(chunks.length)
+  let nextIndex = 0
+
+  const runWorker = async (): Promise<void> => {
+    while (nextIndex < chunks.length) {
+      const index = nextIndex++
+      try {
+        results[index] = await loadWindow(
+          supabase,
+          tableName,
+          chunks[index],
+          combinedSignal,
+          urlLengthLimit
+        )
+      } catch (error) {
+        controller.abort()
+        throw error
+      }
+    }
+  }
+
+  const workerCount = Math.min(MAX_CONCURRENT_CHUNKS, chunks.length)
+  await Promise.all(Array.from({ length: workerCount }, runWorker))
+  return results.flat()
+}
+
+export const supabaseQueryFn = async (
+  supabase: SupabaseClient,
+  tableName: string,
+  ctx: {
+    client: QueryClient
+    queryKey: readonly unknown[]
+    signal: AbortSignal
+    meta: QueryMeta | undefined
+    pageParam?: unknown
+    direction?: unknown
+  },
+  collectionOptions: { maxUrlLength?: number } = {}
+) => {
+  const options = ctx.meta?.loadSubsetOptions ?? {}
+  const maxUrlLength = resolveUrlLengthLimit(
+    supabase,
+    tableName,
+    collectionOptions.maxUrlLength
+  )
+  // The query key stays the full, unchunked subset (subsetOptionsToQueryKey
+  // never sees these chunks), so this fan-out is invisible to
+  // query-db-collection: one query still owns every row it returns.
+  const chunks = splitLoadSubsetOptions(options, {
+    maxUrlLength,
+    measure: (chunkOptions) => measureSubset(supabase, tableName, chunkOptions),
+  })
+
+  if (chunks.length === 1) {
+    return await loadWindow(
+      supabase,
+      tableName,
+      chunks[0],
+      ctx.signal,
+      maxUrlLength
+    )
+  }
+  return await loadChunks(supabase, tableName, chunks, ctx.signal, maxUrlLength)
 }
 
 export const supabaseOnInsert = async (

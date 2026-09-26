@@ -23,6 +23,13 @@ interface PostgrestRequestOptions {
   signal?: AbortSignal
   /** Expect exactly one row (`Accept: application/vnd.pgrst.object+json`). */
   single?: boolean
+  /**
+   * The threshold postgrest-js compares the rendered URL's length against
+   * (default 8000). Purely diagnostic on its side — it only adds a hint to a
+   * fetch error — but is set to the same budget the adapter's own chunking
+   * uses, so the two never disagree about what counts as "too long".
+   */
+  urlLengthLimit?: number
 }
 
 /** A PostgREST read result: the rows plus the total count when one was asked for. */
@@ -56,6 +63,7 @@ export async function postgrestRequest(
     single,
     count,
     signal,
+    urlLengthLimit,
   }: PostgrestRequestOptions
 ): Promise<PostgrestResult> {
   const queryBuilder = supabase.from(table)
@@ -85,6 +93,7 @@ export async function postgrestRequest(
     // The builder threads its own `signal` straight into the underlying fetch,
     // so aborting the query cancels the in-flight request.
     signal,
+    urlLengthLimit,
   })
 
   const { data, error, count: total } = await builder
