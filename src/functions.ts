@@ -59,8 +59,6 @@ type PageOptions = {
   /** The starting offset (always 0 for cursor reads). */
   offset: number
   signal?: AbortSignal
-  /** Threaded through to postgrest-js's own request-line length diagnostic. */
-  urlLengthLimit: number
 }
 
 /**
@@ -75,7 +73,7 @@ async function fetchAllPages(
   supabase: SupabaseClient,
   tableName: string,
   baseSearch: URLSearchParams,
-  { limit, offset: startOffset, signal, urlLengthLimit }: PageOptions
+  { limit, offset: startOffset, signal }: PageOptions
 ): Promise<any[]> {
   // A zero limit is an empty window: return it without touching the network.
   if (limit === 0) {
@@ -90,7 +88,6 @@ async function fetchAllPages(
     search: baseSearch,
     signal,
     count: "exact",
-    urlLengthLimit,
   })
   const rows: any[] = first.data ? [...first.data] : []
 
@@ -113,7 +110,6 @@ async function fetchAllPages(
       method: "GET",
       search: pageSearch,
       signal,
-      urlLengthLimit,
     })
     const pageRows: any[] = page.data ?? []
     rows.push(...pageRows)
@@ -133,8 +129,7 @@ async function loadWindow(
   supabase: SupabaseClient,
   tableName: string,
   options: LoadSubsetOptions,
-  signal: AbortSignal,
-  urlLengthLimit: number
+  signal: AbortSignal
 ) {
   const search = loadSubsetOptionsToSearch(options)
   // Cursor reads pin their own window start, so they never carry an offset (see
@@ -158,7 +153,6 @@ async function loadWindow(
       limit: options.limit,
       offset: startOffset,
       signal,
-      urlLengthLimit,
     })
   }
 
@@ -169,13 +163,11 @@ async function loadWindow(
     fetchAllPages(supabase, tableName, tiesSearch, {
       offset: 0,
       signal,
-      urlLengthLimit,
     }),
     fetchAllPages(supabase, tableName, search, {
       limit: options.limit,
       offset: startOffset,
       signal,
-      urlLengthLimit,
     }),
   ])
   // `whereCurrent` (== boundary) and `whereFrom` (> / < boundary) are disjoint,
@@ -184,39 +176,15 @@ async function loadWindow(
 }
 
 // PostgREST has no body-carried filters for reads and the Supabase API gateway
-// rejects request lines over about 8 KB, so a big `inArray(...)` predicate
-// (the common shape a lazy join's on-demand collection produces) can make a
-// subset's URL too long to send. This default mirrors postgrest-js's own
-// `urlLengthLimit` default so, absent an override, the two agree on what
-// counts as "too long".
-const DEFAULT_URL_LENGTH_LIMIT = 8000
+// rejects request lines over about 8 KB with 414, so a big `inArray(...)`
+// predicate (the common shape a lazy join's on-demand collection produces)
+// can make a subset's URL too long to send. This matches postgrest-js's own
+// `urlLengthLimit` default so the two agree on what counts as "too long".
+export const MAX_URL_LENGTH = 8000
 
 // At most this many chunk requests run at once; splitting a large IN list can
 // produce far more chunks than are worth having in flight simultaneously.
 const MAX_CONCURRENT_CHUNKS = 6
-
-/**
- * The request-line budget chunks are measured against: the collection's own
- * `maxUrlLength` option, else whatever `urlLengthLimit` the table's own
- * `PostgrestQueryBuilder` already carries (itself 8000 unless the caller
- * configured the Supabase client differently), else the hard-coded default.
- * Reading it off `supabase.from(tableName)` keeps this budget in agreement
- * with the diagnostic threshold `postgrestRequest` passes to postgrest-js for
- * the same table.
- */
-function resolveUrlLengthLimit(
-  supabase: SupabaseClient,
-  tableName: string,
-  maxUrlLength: number | undefined
-): number {
-  if (maxUrlLength !== undefined) {
-    return maxUrlLength
-  }
-  const builderLimit = supabase.from(tableName).urlLengthLimit
-  return typeof builderLimit === "number"
-    ? builderLimit
-    : DEFAULT_URL_LENGTH_LIMIT
-}
 
 /**
  * The length of the longest URL a subset would produce: the base table URL
@@ -255,8 +223,7 @@ async function loadChunks(
   supabase: SupabaseClient,
   tableName: string,
   chunks: LoadSubsetOptions[],
-  signal: AbortSignal,
-  urlLengthLimit: number
+  signal: AbortSignal
 ): Promise<any[]> {
   const controller = new AbortController()
   const combinedSignal = AbortSignal.any([signal, controller.signal])
@@ -271,8 +238,7 @@ async function loadChunks(
           supabase,
           tableName,
           chunks[index],
-          combinedSignal,
-          urlLengthLimit
+          combinedSignal
         )
       } catch (error) {
         controller.abort()
@@ -296,33 +262,21 @@ export const supabaseQueryFn = async (
     meta: QueryMeta | undefined
     pageParam?: unknown
     direction?: unknown
-  },
-  collectionOptions: { maxUrlLength?: number } = {}
+  }
 ) => {
   const options = ctx.meta?.loadSubsetOptions ?? {}
-  const maxUrlLength = resolveUrlLengthLimit(
-    supabase,
-    tableName,
-    collectionOptions.maxUrlLength
-  )
   // The query key stays the full, unchunked subset (subsetOptionsToQueryKey
   // never sees these chunks), so this fan-out is invisible to
   // query-db-collection: one query still owns every row it returns.
   const chunks = splitLoadSubsetOptions(options, {
-    maxUrlLength,
+    maxUrlLength: MAX_URL_LENGTH,
     measure: (chunkOptions) => measureSubset(supabase, tableName, chunkOptions),
   })
 
   if (chunks.length === 1) {
-    return await loadWindow(
-      supabase,
-      tableName,
-      chunks[0],
-      ctx.signal,
-      maxUrlLength
-    )
+    return await loadWindow(supabase, tableName, chunks[0], ctx.signal)
   }
-  return await loadChunks(supabase, tableName, chunks, ctx.signal, maxUrlLength)
+  return await loadChunks(supabase, tableName, chunks, ctx.signal)
 }
 
 export const supabaseOnInsert = async (
