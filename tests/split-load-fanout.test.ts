@@ -1,8 +1,9 @@
 import { createClient } from "@supabase/supabase-js"
-import { IR, inArray } from "@tanstack/db"
+import { IR, inArray, type LoadSubsetOptions } from "@tanstack/db"
 import { QueryClient } from "@tanstack/query-core"
 import { describe, expect, test, vi } from "vitest"
-import { supabaseQueryFn } from "../src/functions"
+import { MAX_URL_LENGTH, supabaseQueryFn } from "../src/functions"
+import { loadSubsetOptionsToSearch } from "../src/postgrest-filters"
 import {
   getRawUrls,
   getSearches,
@@ -13,36 +14,68 @@ import { SUPABASE_KEY, SUPABASE_URL } from "./test.utils"
 // Same table shape `makePaginatingFetch` was built for: a bare numeric `id`.
 const idRef = new IR.PropRef<number>(["id"])
 
+// The base table URL `supabaseQueryFn` measures every subset's rendered URL
+// against (see `measureSubset` in src/functions.ts) — computed once here so
+// `idsExceedingLength` can size an id list against the same budget the
+// production splitter uses.
+const BASE_URL_LENGTH = createClient(SUPABASE_URL, SUPABASE_KEY)
+  .from("items")
+  .url.toString().length
+
+/**
+ * A dense `1..n` id list whose rendered `in(...)` filter, combined with the
+ * base table URL, is at least `minLength` characters — i.e. the URL a single,
+ * unsplit request for this list would produce. Sized against `MAX_URL_LENGTH`
+ * (rather than a hard-coded id count) so the tests below keep exercising the
+ * splitter even if that constant ever changes.
+ *
+ * A small sample list's rendered length estimates the average per-id cost
+ * (digits plus a percent-encoded comma); the list is then resized to that
+ * estimate. One correction pass is always enough — the only thing the sample
+ * can get wrong is the id width, which grows by at most a digit or two
+ * between the sample and the final count.
+ */
+function idsExceedingLength(minLength: number): number[] {
+  let count = 100
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const ids = Array.from({ length: count }, (_, i) => i + 1)
+    const length =
+      BASE_URL_LENGTH +
+      loadSubsetOptionsToSearch({
+        where: inArray(idRef, ids),
+      } as unknown as LoadSubsetOptions).toString().length
+    if (length >= minLength) {
+      return ids
+    }
+    const perId = (length - BASE_URL_LENGTH) / count
+    count = Math.ceil((minLength - BASE_URL_LENGTH) / perId) + 10
+  }
+  throw new Error(`could not size an id list past ${minLength} characters`)
+}
+
 const run = (
   mockFetch: ReturnType<typeof makePaginatingFetch> | typeof fetch,
   ids: number[],
-  maxUrlLength: number,
   signal: AbortSignal = new AbortController().signal
 ) => {
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
     global: { fetch: mockFetch },
   })
-  return supabaseQueryFn(
-    supabase,
-    "items",
-    {
-      client: new QueryClient(),
-      queryKey: ["items"],
-      signal,
-      meta: { loadSubsetOptions: { where: inArray(idRef, ids) } } as never,
-    },
-    { maxUrlLength }
-  )
+  return supabaseQueryFn(supabase, "items", {
+    client: new QueryClient(),
+    queryKey: ["items"],
+    signal,
+    meta: { loadSubsetOptions: { where: inArray(idRef, ids) } } as never,
+  })
 }
 
 describe("supabaseQueryFn: chunked fan-out for an oversized IN list", () => {
   test("many ids produce multiple requests, every URL within budget, and every matching row comes back", async () => {
-    const ids = Array.from({ length: 40 }, (_, i) => i + 1)
+    const ids = idsExceedingLength(MAX_URL_LENGTH * 1.5)
     const fixture = ids.map((id) => ({ id }))
     const mockFetch = makePaginatingFetch(fixture)
-    const maxUrlLength = 100
 
-    const rows = await run(mockFetch, ids, maxUrlLength)
+    const rows = await run(mockFetch, ids)
 
     expect(
       (rows as Array<{ id: number }>).map((r) => r.id).sort((a, b) => a - b)
@@ -55,36 +88,37 @@ describe("supabaseQueryFn: chunked fan-out for an oversized IN list", () => {
     for (const search of searches) {
       expect(search).toMatch(/id=in\.\(/)
     }
-    // The budget is measured against `base URL + rendered search string`
-    // (no separator); the real request URL adds one `?` on top of that, so
-    // the wire length is at most one character longer than the budget.
+    // Every rendered request line stays within the fixed budget.
     for (const rawUrl of getRawUrls(mockFetch)) {
-      expect(rawUrl.length).toBeLessThanOrEqual(maxUrlLength + 1)
+      expect(rawUrl.length).toBeLessThanOrEqual(MAX_URL_LENGTH + 1)
     }
   })
 
   test("splitting and the db-max-rows cap compose: a chunk larger than the cap still pages", async () => {
-    const ids = Array.from({ length: 40 }, (_, i) => i + 1)
+    const ids = idsExceedingLength(MAX_URL_LENGTH * 1.5)
     const fixture = ids.map((id) => ({ id }))
-    // Fits ~20 ids per chunk, so two chunks of 20 — each well above the cap.
-    const maxUrlLength = 145
-    const cap = 7
+    // Small enough that each chunk (hundreds to low thousands of ids) needs
+    // several pages, but not so small that the paging loop needs thousands of
+    // requests to get through a chunk.
+    const cap = 100
     const mockFetch = makePaginatingFetch(fixture, { cap })
 
-    const rows = await run(mockFetch, ids, maxUrlLength)
+    const rows = await run(mockFetch, ids)
 
     const returned = (rows as Array<{ id: number }>).map((r) => r.id)
     expect(returned.sort((a, b) => a - b)).toEqual(ids)
     expect(new Set(returned).size).toBe(ids.length)
+    const searches = getSearches(mockFetch)
     // More requests than there are chunks: each chunk's own paging loop ran.
-    expect(getSearches(mockFetch).length).toBeGreaterThan(2)
+    expect(searches.length).toBeGreaterThan(2)
   })
 
   test("one failing chunk rejects the load and aborts its sibling requests", async () => {
-    const ids = Array.from({ length: 8 }, (_, i) => i + 1)
-    // Fits two ids per request, so four chunks are issued concurrently
-    // (well under MAX_CONCURRENT_CHUNKS).
-    const maxUrlLength = 62
+    const ids = idsExceedingLength(MAX_URL_LENGTH * 3)
+    // Any id lands in exactly one chunk (chunks are disjoint slices of the
+    // sorted list), so failing whichever chunk holds this one exercises the
+    // abort path without depending on how many chunks came out.
+    const failId = ids[0]
     let abortedCount = 0
 
     const failingFetch = vi
@@ -92,9 +126,14 @@ describe("supabaseQueryFn: chunked fan-out for an oversized IN list", () => {
       .mockImplementation((input, init) => {
         const params = new URL(String(input)).searchParams
         const idFilter = params.get("id") ?? ""
-        // The chunk holding id 3 fails fast; every other chunk is slow enough
-        // that the abort raised by the failure reaches it first.
-        const isFailingChunk = idFilter.includes("3")
+        const members = idFilter
+          .replace(/^in\.\(/, "")
+          .replace(/\)$/, "")
+          .split(",")
+          .map(Number)
+        // The chunk holding `failId` fails fast; every other chunk is slow
+        // enough that the abort raised by the failure reaches it first.
+        const isFailingChunk = members.includes(failId)
         const signal = init?.signal as AbortSignal | undefined
 
         return new Promise<Response>((resolve, reject) => {
@@ -127,17 +166,18 @@ describe("supabaseQueryFn: chunked fan-out for an oversized IN list", () => {
         })
       })
 
-    await expect(run(failingFetch, ids, maxUrlLength)).rejects.toBeDefined()
+    await expect(run(failingFetch, ids)).rejects.toBeDefined()
     // Give the aborted siblings' rejection handlers a turn to run.
     await new Promise((resolve) => setTimeout(resolve, 60))
     expect(abortedCount).toBeGreaterThan(0)
   })
 
   test("concurrency never exceeds the fan-out's concurrency cap", async () => {
-    const ids = Array.from({ length: 30 }, (_, i) => i + 1)
+    // MAX_CONCURRENT_CHUNKS (src/functions.ts) is 6; size the list well past
+    // that so the cap actually binds instead of every chunk fitting in one
+    // wave.
+    const ids = idsExceedingLength(MAX_URL_LENGTH * 10)
     const fixture = ids.map((id) => ({ id }))
-    // Two ids per request => 15 chunks, comfortably more than the cap.
-    const maxUrlLength = 62
     const base = makePaginatingFetch(fixture)
 
     let active = 0
@@ -155,9 +195,12 @@ describe("supabaseQueryFn: chunked fan-out for an oversized IN list", () => {
       }
     })
 
-    const rows = await run(trackedFetch, ids, maxUrlLength)
+    const rows = await run(trackedFetch, ids)
 
     expect((rows as Array<{ id: number }>).length).toBe(ids.length)
+    const searches = getSearches(trackedFetch)
+    // Sizing above actually produced more chunks than the concurrency cap.
+    expect(searches.length).toBeGreaterThan(6)
     // MAX_CONCURRENT_CHUNKS in src/functions.ts.
     expect(peak).toBeLessThanOrEqual(6)
     // The cap should actually bind here — otherwise this test would not have
