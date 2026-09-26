@@ -1,7 +1,11 @@
 /* biome-ignore-all lint/suspicious/noExplicitAny: collection items are typed by the caller's schema, not statically known here */
 import type { StandardSchemaV1 } from "@standard-schema/spec"
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { BasicIndex, type Collection } from "@tanstack/db"
+import {
+  BasicIndex,
+  type Collection,
+  type StringCollationConfig,
+} from "@tanstack/db"
 import type { QueryClient } from "@tanstack/query-core"
 import { queryCollectionOptions } from "@tanstack/query-db-collection"
 import {
@@ -15,6 +19,12 @@ import { getQueryClient } from "./query-client"
 import { syncTableSubscription, type TableEntry } from "./realtime"
 
 interface SupabaseCollectionOptions<TSchema extends StandardSchemaV1> {
+  /**
+   * Controls how string columns are compared when ordering, matching the
+   * database's collation settings. Defaults to `{ stringSort: 'lexical' }`
+   * (byte-order comparison).
+   */
+  defaultStringCollation?: StringCollationConfig
   /**
    * The columns that uniquely identify a row. Used to extract the key for
    * storing the item in the collection and to build the where clause for
@@ -97,6 +107,7 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
   supabase,
   realtime,
   realtimeUseFilter = false,
+  defaultStringCollation = { stringSort: `lexical` },
 }: SupabaseCollectionOptions<TSchema>) => {
   // if the query client is not provided, use the global query client
   queryClient = queryClient ?? getQueryClient()
@@ -139,6 +150,7 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
     onDelete: (ctx) => supabaseOnDelete(supabase, tableName, keyColumns, ctx),
     autoIndex: "eager",
     defaultIndexType: BasicIndex,
+    defaultStringCollation,
   })
 
   const originalSync = config.sync.sync
