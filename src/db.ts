@@ -21,6 +21,17 @@ interface SupabaseCollectionOptions<TSchema extends StandardSchemaV1> {
    * update and delete operations.
    */
   keys: Array<keyof StandardSchemaV1.InferOutput<TSchema> & string>
+  /**
+   * The longest request-line URL a single read is allowed to produce, in
+   * characters. A `loadSubset` whose rendered URL would exceed this is instead
+   * split into several requests over disjoint slices of its largest `IN` list
+   * (run with bounded concurrency and concatenated) so a big `inArray(...)`
+   * filter — the common shape for on-demand joins — doesn't trip the API
+   * gateway's request-line limit (Supabase's is about 8 KB) or fail outright.
+   * Defaults to `supabase.from(tableName).urlLengthLimit` (itself 8000 unless
+   * configured on the client) when unset. Raise it if your proxy allows more.
+   */
+  maxUrlLength?: number
   /** The query client */
   queryClient?: QueryClient
   /** Whether to receive updates when a record has been inserted, updated, or deleted by another user */
@@ -97,6 +108,7 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
   supabase,
   realtime,
   realtimeUseFilter = false,
+  maxUrlLength,
 }: SupabaseCollectionOptions<TSchema>) => {
   // if the query client is not provided, use the global query client
   queryClient = queryClient ?? getQueryClient()
@@ -133,7 +145,8 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
     // published. Gating the fetch on the subscription closes this gap but couples
     // every first load to Realtime connect latency, so it is intentionally left
     // out and tracked separately.
-    queryFn: (ctx) => supabaseQueryFn(supabase, tableName, ctx),
+    queryFn: (ctx) =>
+      supabaseQueryFn(supabase, tableName, ctx, { maxUrlLength }),
     onInsert: (ctx) => supabaseOnInsert(supabase, tableName, ctx),
     onUpdate: (ctx) => supabaseOnUpdate(supabase, tableName, keyColumns, ctx),
     onDelete: (ctx) => supabaseOnDelete(supabase, tableName, keyColumns, ctx),

@@ -134,6 +134,7 @@ const todos = createCollection(
 | `realtime`    | `boolean`          | No       | When `true`, subscribes to Postgres changes and reconciles inserts, updates, and deletes into the collection. Defaults to `false`. |
 | `realtimeUseFilter` | `boolean`    | No       | **Experimental.** Only applies when `realtime` is `true`. When `true`, each active query's `WHERE` clause is pushed to the Realtime subscription as a `postgres_changes` filter, so the channel only receives changes those queries care about. Defaults to `false`, which subscribes to every change on the table and filters client-side — simpler, at the cost of more Realtime traffic. Queries whose `WHERE` cannot be expressed as a Realtime filter (e.g. `or(...)`) transparently fall back to the unfiltered subscription. |
 | `queryClient` | `QueryClient`      | No       | TanStack Query client. If omitted, a shared global client is used.                                                     |
+| `maxUrlLength` | `number`         | No       | The longest request-line URL a single read may produce, in characters. A `loadSubset` whose rendered URL would exceed this is split into several requests instead (see [Oversized `IN` lists](#oversized-in-lists) below). Defaults to `supabase.from(tableName).urlLengthLimit` (itself 8000 unless configured on the client). |
 
 **Returns** a collection options object to pass to `createCollection`.
 
@@ -199,6 +200,14 @@ Known limitations of the paging loop:
 - **Ordering.** Pages are stitched together with `offset`, and PostgreSQL does not guarantee a consistent row order across separate `LIMIT`/`OFFSET` queries unless the sort is total. A read with no `orderBy`, or one ordered on a non-unique column, can skip or repeat rows across page boundaries. Order by a unique column (or include the primary key as a final sort key) when a collection is expected to exceed the cap.
 - **Concurrent writes.** Offset paging is not keyset-stable: a row inserted or deleted by another client while a multi-page read is in flight shifts the remaining rows by one offset, so a row can be missed or duplicated until the next refetch.
 - **Count cost.** Every collection read issues one `Prefer: count=exact` on its first request so the loop knows when to stop. On very large tables, or under heavy RLS, that is a full `count(*)` per read.
+
+### Oversized `IN` lists
+
+Every read is a PostgREST `GET`, so every filter — including a large `inArray(...)`, the shape a lazy join's on-demand collection produces for its join keys — lives in the query string. Supabase's API gateway rejects request lines over about 8 KB with `414 URI Too Long`, and postgrest-js's own `urlLengthLimit` (default 8000) is purely diagnostic: it only adds a hint to the error, it never splits or reroutes the request.
+
+This adapter does the splitting itself. When a `loadSubset`'s rendered URL would exceed the budget (`maxUrlLength`, see above), it slices the request's largest top-level `inArray(...)` filter into several disjoint requests that each fit, runs them with a concurrency cap, and concatenates the results. This is transparent to the rest of the collection: the query key stays the full, unchunked subset, so one query still owns every row it returns, and `useLiveQuery` code needs no changes.
+
+Only a positive, top-level AND-ed `inArray(...)` is ever split — never a `not(inArray(...))`, and never one nested inside an `or(...)`, since chunking either would change which rows the union of requests matches. When no such filter exists, or the subset still cannot be made to fit, the request is sent as-is and the server's response (success or error) surfaces exactly as it would without this adapter.
 
 **Evaluated Client-Side**
 
