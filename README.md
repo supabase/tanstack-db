@@ -134,6 +134,7 @@ const todos = createCollection(
 | `realtime`    | `boolean`          | No       | When `true`, subscribes to Postgres changes and reconciles inserts, updates, and deletes into the collection. Defaults to `false`. |
 | `realtimeUseFilter` | `boolean`    | No       | **Experimental.** Only applies when `realtime` is `true`. When `true`, each active query's `WHERE` clause is pushed to the Realtime subscription as a `postgres_changes` filter, so the channel only receives changes those queries care about. Defaults to `false`, which subscribes to every change on the table and filters client-side — simpler, at the cost of more Realtime traffic. Queries whose `WHERE` cannot be expressed as a Realtime filter (e.g. `or(...)`) transparently fall back to the unfiltered subscription. |
 | `queryClient` | `QueryClient`      | No       | TanStack Query client. If omitted, a shared global client is used.                                                     |
+| `defaultStringCollation` | `StringCollationConfig` | No | Controls how string columns are compared when ordering, matching the database's collation settings. Defaults to `{ stringSort: 'lexical' }` (byte-order comparison). Pass `{ stringSort: 'locale', locale, localeOptions }` for locale-aware sorting. |
 
 **Returns** a collection options object to pass to `createCollection`.
 
