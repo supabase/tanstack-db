@@ -47,7 +47,7 @@ test("inserts a row through PostgREST and reflects the server row", async ({
     email: "carol@test.com",
     active: true,
   })
-  await tx.isPersisted.promise
+  await tx.when("settled")
 
   await vi.waitFor(
     () =>
@@ -77,7 +77,7 @@ test("updates a row through PostgREST and reflects the server row", async ({
   const tx = users.collection.update(String(alice?.id), (draft) => {
     draft.name = "Alice Updated"
   })
-  await tx.isPersisted.promise
+  await tx.when("settled")
 
   await vi.waitFor(
     () =>
@@ -100,7 +100,7 @@ test("deletes a row through PostgREST", async ({ users, usersLive }) => {
   const bob = usersLive.toArray.find((user) => user.name === "Bob")
 
   const tx = users.collection.delete(String(bob?.id))
-  await tx.isPersisted.promise
+  await tx.when("settled")
 
   await vi.waitFor(
     () =>

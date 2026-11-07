@@ -42,8 +42,7 @@ export interface SerializedOrderByClause {
 
 export interface SerializedJoinClause {
   from: SerializedFrom
-  left: SerializedExpression
-  right: SerializedExpression
+  on: SerializedExpression
   type: string
 }
 
@@ -259,8 +258,7 @@ function serializeJoinClause(clause: IR.JoinClause): SerializedJoinClause {
   return {
     from: serializeFrom(clause.from),
     type: clause.type,
-    left: serializeExpression(clause.left),
-    right: serializeExpression(clause.right),
+    on: serializeExpression(clause.on),
   }
 }
 

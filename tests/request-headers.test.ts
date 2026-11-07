@@ -49,7 +49,7 @@ describe("automatic X-Client-Info header", () => {
       email: "bob@test.com",
       active: true,
     })
-    await tx.isPersisted.promise
+    await tx.when("settled")
 
     const lastCall = mockFetch.mock.calls.length - 1
     expect(getRequestHeaders(mockFetch, lastCall).get("x-client-info")).toBe(
@@ -68,12 +68,12 @@ describe("automatic X-Client-Info header", () => {
       email: "bob@test.com",
       active: true,
     })
-    await insertTx.isPersisted.promise
+    await insertTx.when("settled")
 
     const updateTx = collection.update("2", (draft) => {
       draft.name = "Bobby"
     })
-    await updateTx.isPersisted.promise
+    await updateTx.when("settled")
 
     const lastCall = mockFetch.mock.calls.length - 1
     expect(getRequestHeaders(mockFetch, lastCall).get("x-client-info")).toBe(
@@ -92,10 +92,10 @@ describe("automatic X-Client-Info header", () => {
       email: "bob@test.com",
       active: true,
     })
-    await insertTx.isPersisted.promise
+    await insertTx.when("settled")
 
     const deleteTx = collection.delete("2")
-    await deleteTx.isPersisted.promise
+    await deleteTx.when("settled")
 
     const lastCall = mockFetch.mock.calls.length - 1
     expect(getRequestHeaders(mockFetch, lastCall).get("x-client-info")).toBe(

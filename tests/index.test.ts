@@ -6,10 +6,12 @@ import {
   concat,
   count,
   eq,
+  groupKeys,
   gt,
   gte,
   ilike,
   inArray,
+  include,
   isNull,
   isUndefined,
   length,
@@ -563,7 +565,9 @@ describe("PostgREST query generation", () => {
   describe("GROUP BY (client-side)", () => {
     test("single column groupBy", async () => {
       await queryResult((q) =>
-        q.from({ user: usersCollection }).groupBy(({ user }) => user.active)
+        q
+          .from({ user: usersCollection })
+          .groupBy(groupKeys(({ user }) => user.active))
       )
       expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
     })
@@ -573,7 +577,7 @@ describe("PostgREST query generation", () => {
         q
           .from({ user: usersCollection })
           .where(({ user }) => eq(user.active, true))
-          .groupBy(({ user }) => user.active)
+          .groupBy(groupKeys(({ user }) => user.active))
       )
       expectFetchUrls(mockFetch, ["/rest/v1/users?active=eq.true&select=*"])
     })
@@ -582,7 +586,7 @@ describe("PostgREST query generation", () => {
       await queryResult((q) =>
         q
           .from({ user: usersCollection })
-          .groupBy(({ user }) => [user.active, user.name])
+          .groupBy(groupKeys(({ user }) => [user.active, user.name]))
       )
       expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
     })
@@ -835,9 +839,11 @@ describe("PostgREST query generation", () => {
       await queryResult((q) =>
         q.from({ user: usersCollection }).select(({ user }) => ({
           id: user.id,
-          todos: q
-            .from({ ut: utCollection })
-            .where(({ ut }) => eq(ut.user_id, user.id)),
+          todos: include(
+            q
+              .from({ ut: utCollection })
+              .where(({ ut }) => eq(ut.user_id, user.id))
+          ),
         }))
       )
 
@@ -971,8 +977,10 @@ describe("PostgREST query generation", () => {
         const userTodos = q.from({ ut: utCollection })
         return q
           .from({ user: usersCollection })
-          .join({ ut: userTodos }, ({ user, ut }) => eq(user.id, ut.user_id))
-          .join({ ut: userTodos }, ({ user, ut }) => eq(user.id, ut?.user_id))
+          .join({ ut1: userTodos }, ({ user, ut1 }) => eq(user.id, ut1.user_id))
+          .join({ ut2: userTodos }, ({ user, ut2 }) =>
+            eq(user.id, ut2?.user_id)
+          )
       })
 
       expectFetchUrls(mockFetch, [
