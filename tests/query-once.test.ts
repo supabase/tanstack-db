@@ -11,6 +11,7 @@ import {
   gte,
   ilike,
   inArray,
+  include,
   isNull,
   length,
   like,
@@ -1005,9 +1006,11 @@ describe("queryOnce PostgREST query generation", () => {
         (q) =>
           q.from({ user: usersCollection }).select(({ user }) => ({
             id: user.id,
-            todos: q
-              .from({ ut: utCollection })
-              .where(({ ut }) => eq(ut.user_id, user.id)),
+            todos: include(
+              q
+                .from({ ut: utCollection })
+                .where(({ ut }) => eq(ut.user_id, user.id))
+            ),
           })),
         supabase
       )

@@ -248,6 +248,29 @@ function buildJoinEmbeds(ir: SerializedQueryIR): string[] {
 }
 
 /**
+ * Split a join condition into its left and right operands. `@tanstack/db` 1.0
+ * models the condition as a single boolean `on` expression instead of separate
+ * `left` / `right` operands. A plain `eq(a, b)` yields its two operands; for an
+ * `and(...)` of conditions the first `eq` is used, as the rest cannot be
+ * expressed through a single PostgREST embedding hint.
+ */
+function joinOperands(
+  on: Expression
+): { left: Expression; right: Expression } | null {
+  if (on.type !== "func") return null
+  if (on.name === "eq" && on.args.length === 2) {
+    return { left: on.args[0], right: on.args[1] }
+  }
+  if (on.name === "and") {
+    for (const arg of on.args) {
+      const operands = joinOperands(arg)
+      if (operands) return operands
+    }
+  }
+  return null
+}
+
+/**
  * Determine which existing node a join attaches to, and extract
  * the foreign key hint from the join condition.
  */
@@ -256,30 +279,32 @@ function resolveJoinParent(
   joinAlias: string,
   nodeMap: Map<string, EmbedNode>
 ): { parentAlias: string; fkHint: string } {
-  const leftAlias = join.left.type === "ref" ? join.left.path[0] : null
-  const rightAlias = join.right.type === "ref" ? join.right.path[0] : null
+  const operands = joinOperands(join.on)
+  if (!operands) return { parentAlias: "", fkHint: "" }
+  const { left, right } = operands
+
+  const leftAlias = left.type === "ref" ? left.path[0] : null
+  const rightAlias = right.type === "ref" ? right.path[0] : null
 
   // Left side is existing table, right side is the new join table
   if (leftAlias && nodeMap.has(leftAlias) && rightAlias === joinAlias) {
-    const fk =
-      join.right.type === "ref" ? join.right.path.slice(1).join(".") : ""
+    const fk = right.type === "ref" ? right.path.slice(1).join(".") : ""
     return { parentAlias: leftAlias, fkHint: fk }
   }
 
   // Right side is existing table, left side is the new join table
   if (rightAlias && nodeMap.has(rightAlias) && leftAlias === joinAlias) {
-    const fk = join.left.type === "ref" ? join.left.path.slice(1).join(".") : ""
+    const fk = left.type === "ref" ? left.path.slice(1).join(".") : ""
     return { parentAlias: rightAlias, fkHint: fk }
   }
 
   // Fallback: attach to whichever side is already in the tree
   if (leftAlias && nodeMap.has(leftAlias)) {
-    const fk =
-      join.right.type === "ref" ? join.right.path.slice(1).join(".") : ""
+    const fk = right.type === "ref" ? right.path.slice(1).join(".") : ""
     return { parentAlias: leftAlias, fkHint: fk }
   }
   if (rightAlias && nodeMap.has(rightAlias)) {
-    const fk = join.left.type === "ref" ? join.left.path.slice(1).join(".") : ""
+    const fk = left.type === "ref" ? left.path.slice(1).join(".") : ""
     return { parentAlias: rightAlias, fkHint: fk }
   }
 

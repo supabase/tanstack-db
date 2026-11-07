@@ -6,6 +6,7 @@ import {
   type UpdateMutationFnParams,
 } from "@tanstack/db"
 import type { QueryClient, QueryMeta } from "@tanstack/query-core"
+import { DeleteOperationItemNotFoundError } from "@tanstack/query-db-collection"
 import {
   cursorCurrentToSearch,
   cursorWhereFromToSearch,
@@ -194,11 +195,9 @@ export const supabaseOnInsert = async (
       // The data has been inserted and confirmed by the server, so we can write
       // it to the collection. Realtime may already have echoed the insert, in
       // which case this is an update of the synced row rather than an insert.
-      collection.utils.writeUpsert(data)
+      await collection.utils.writeUpsert(data)
     })
   )
-
-  return { refetch: false }
 }
 
 export const supabaseOnUpdate = async (
@@ -221,11 +220,9 @@ export const supabaseOnUpdate = async (
       })
 
       mutation.modified = data
-      collection.utils.writeUpdate(data)
+      await collection.utils.writeUpdate(data)
     })
   )
-
-  return { refetch: false }
 }
 
 export const supabaseOnDelete = async (
@@ -245,11 +242,19 @@ export const supabaseOnDelete = async (
       // it to the collection — unless Realtime already echoed the delete, in
       // which case the synced row is gone and writing again would throw.
       const key = collection.getKeyFromItem(mutation.original)
-      if (isSynced(collection, key)) {
-        collection.utils.writeDelete(key)
+      if (!isSynced(collection, key)) {
+        return
+      }
+      try {
+        await collection.utils.writeDelete(key)
+      } catch (error) {
+        // Direct writes are applied asynchronously, so a Realtime echo can
+        // remove the row between the check above and this write being applied.
+        // The row is gone either way, so the delete is already confirmed.
+        if (!(error instanceof DeleteOperationItemNotFoundError)) {
+          throw error
+        }
       }
     })
   )
-
-  return { refetch: false }
 }
