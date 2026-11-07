@@ -22,8 +22,7 @@ import { syncTableSubscription, type TableEntry } from "./realtime"
 interface SupabaseCollectionOptions<TSchema extends StandardSchemaV1> {
   /**
    * Controls how string columns are compared when ordering, matching the
-   * database's collation settings. Defaults to `{ stringSort: 'lexical' }`
-   * (byte-order comparison).
+   * database's collation settings. If omitted, TanStack DB's default is used.
    */
   defaultStringCollation?: StringCollationConfig
   /**
@@ -123,7 +122,7 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
   supabase,
   realtime,
   realtimeUseFilter = false,
-  defaultStringCollation = { stringSort: `lexical` },
+  defaultStringCollation,
 }: SupabaseCollectionOptions<TSchema>) => {
   // if the query client is not provided, use the global query client
   queryClient = queryClient ?? getQueryClient()
