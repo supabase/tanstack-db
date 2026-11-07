@@ -4,18 +4,15 @@ import {
   type ExtractContext,
   type InferResultType,
   type InitialQueryBuilder,
+  type IR,
   Query,
   type QueryBuilder,
   queryOnce as queryOnceBase,
 } from "@tanstack/db"
-import { queryIrToSearch } from "./postgrest-filters"
+import { isSupabaseCollection } from "./db"
+import { isAggregateOnlySelect, queryIrToSearch } from "./postgrest-filters"
 import { postgrestRequest } from "./postgrest-request"
-import {
-  type SerializedExpression,
-  type SerializedQueryIR,
-  type SerializedSelect,
-  serializeQueryIR,
-} from "./serialize"
+import { type SerializedQueryIR, serializeQueryIR } from "./serialize"
 
 // ── Execution ───────────────────────────────────────────────────────
 
@@ -30,9 +27,8 @@ export async function executeQuery(
   ir: SerializedQueryIR
 ): Promise<unknown[]> {
   const { tableName, search } = queryIrToSearch(ir)
-  // The aggregate / groupBy / having path stays a single request: aggregate
-  // output is a handful of rows, so the db-max-rows cap does not apply and no
-  // paging loop is needed here.
+  // queryOnce only sends aggregate-only selects here, whose output is one
+  // row, so the db-max-rows cap does not apply and no paging loop is needed.
   const { data } = await postgrestRequest(supabase, tableName, {
     method: "GET",
     search,
@@ -40,17 +36,79 @@ export async function executeQuery(
   return data ?? []
 }
 
-// ── Aggregate detection ─────────────────────────────────────────────
+/** Run an aggregate-only query on PostgREST, shaped like TanStack's result */
+async function executeServerAggregate(
+  supabase: SupabaseClient,
+  ir: SerializedQueryIR
+): Promise<unknown> {
+  // A single aggregate row has nothing to order, and Postgres rejects ORDER BY
+  // on a column outside the aggregates.
+  const rows = await executeQuery(supabase, { ...ir, orderBy: undefined })
+  return ir.singleResult ? rows[0] : rows
+}
 
-/** Check if a SerializedSelect contains any aggregate expressions */
-function hasAggregates(select: SerializedSelect | undefined): boolean {
-  if (!select) return false
-  for (const value of Object.values(select)) {
-    if (value && typeof value === "object" && "type" in value) {
-      if ((value as SerializedExpression).type === "agg") return true
-    }
+// ── Server aggregate detection ──────────────────────────────────────
+
+/**
+ * Clauses the server aggregate path reproduces exactly: filters, paging, and
+ * the no-op order/distinct on its single row. findOne is unwrapped.
+ */
+const SERVER_AGGREGATE_CLAUSES = new Set([
+  "from",
+  "select",
+  "where",
+  "orderBy",
+  "limit",
+  "offset",
+  "distinct",
+  "singleResult",
+])
+
+/** Clauses a subquery source may set and still be pushed down: its filters */
+const FILTER_ONLY_CLAUSES = new Set(["from", "where"])
+
+/** Whether every clause the query sets is in `allowed` */
+function setsOnly(query: IR.QueryIR, allowed: Set<string>): boolean {
+  return Object.entries(query).every(
+    ([clause, value]) =>
+      allowed.has(clause) ||
+      value === undefined ||
+      (Array.isArray(value) && value.length === 0)
+  )
+}
+
+/**
+ * A Supabase table, or a subquery that only filters one (its where is pushed
+ * down). A collection this package did not create has no table to query.
+ */
+function isFilteredTable(from: IR.From): boolean {
+  if (from.type === "collectionRef") {
+    return isSupabaseCollection(from.collection)
   }
-  return false
+  return (
+    from.type === "queryRef" &&
+    setsOnly(from.query, FILTER_ONLY_CLAUSES) &&
+    isFilteredTable(from.query.from)
+  )
+}
+
+/**
+ * Whether PostgREST alone produces the query's exact result: one row of
+ * aggregates over a single, optionally filtered table. executeQuery returns
+ * PostgREST's response as-is, so anything else (grouping, joins, unions,
+ * functional clauses, plain or computed select fields) is left to TanStack DB.
+ * This is an allow-list so that clauses added to the IR later default to the
+ * client-side path.
+ */
+function isServerAggregate(
+  ir: IR.QueryIR,
+  serialized: SerializedQueryIR
+): boolean {
+  return (
+    setsOnly(ir, SERVER_AGGREGATE_CLAUSES) &&
+    isFilteredTable(ir.from) &&
+    isAggregateOnlySelect(serialized.select)
+  )
 }
 
 // ── Public API ──────────────────────────────────────────────────────
@@ -58,13 +116,17 @@ function hasAggregates(select: SerializedSelect | undefined): boolean {
 /**
  * Execute a TanStack DB query against Supabase in a one-shot manner.
  *
- * Translates the query IR to a single PostgREST request, pushing filters,
- * ordering, limit, offset, joins (resource embedding), and aggregates
- * to the server.
+ * A query whose select contains only aggregates (count/sum/avg/min/max) over
+ * a single Supabase table, with no grouping, join, or functional clause, is
+ * translated to a single PostgREST request and computed by the server. It
+ * relies on PostgREST aggregate functions, which must be enabled with
+ * `pgrst.db_aggregates_enabled`.
  *
- * Operations that cannot be pushed (groupBy, having, distinct, computed
- * select expressions) are not applied — the raw fetched data is returned
- * for client-side processing.
+ * Every other query, including groupBy and having, runs through TanStack DB's
+ * own `queryOnce` over the collections: filters, ordering, and limits are
+ * pushed to PostgREST where possible, and the remaining operations (grouping,
+ * having, distinct, computed select expressions) are applied client-side over
+ * the fetched rows.
  */
 export const queryOnce = <
   TQueryFn extends (q: InitialQueryBuilder) => QueryBuilder<any>,
@@ -76,12 +138,8 @@ export const queryOnce = <
   const q = new Query()
   const ir = (callback(q) as unknown as BaseQueryBuilder)._getQuery()
   const serialized = serializeQueryIR(ir)
-  if (
-    hasAggregates(serialized.select) ||
-    (serialized.groupBy?.length ?? 0) > 0 ||
-    (serialized.having?.length ?? 0) > 0
-  ) {
-    return executeQuery(supabase, serialized) as Promise<
+  if (isServerAggregate(ir, serialized)) {
+    return executeServerAggregate(supabase, serialized) as Promise<
       InferResultType<ExtractContext<TQuery>>
     >
   }

@@ -158,15 +158,22 @@ const completedTodos = await queryOnce(
 | Parameter  | Type                  | Description                                            |
 | ---------- | --------------------- | ------------------------------------------------------ |
 | `callback` | `(q) => QueryBuilder` | Builds the query using the same API as `useLiveQuery`. |
-| `supabase` | `SupabaseClient`      | Supabase client used to execute the request.           |
+| `supabase` | `SupabaseClient`      | Supabase client used for server-side aggregates. Other queries read through each collection's own client. |
 
 **Returns** a `Promise` that resolves to the query result, typed from the query you built.
 
 Use `queryOnce` when you need a one-shot fetch, such as in server components, API routes, or form submissions where live updates are not needed.
 
-Filters, ordering, `limit`, `offset`, joins, and aggregate functions (`count`, `sum`, `avg`, `min`, `max`) are pushed to PostgREST. Operations that cannot be pushed fall back to fetching matching rows and processing them client-side.
+Filters, ordering, `limit`, `offset`, and joins are pushed to PostgREST. A query whose `select` contains only aggregate functions (`count`, `sum`, `avg`, `min`, `max`) over a single table is computed by PostgREST in a single request. Operations that cannot be pushed fall back to fetching matching rows and processing them client-side.
 
-Fallback operations include `GROUP BY`, `HAVING`, `DISTINCT`, and computed `SELECT` expressions.
+Fallback operations include `GROUP BY`, `HAVING`, `DISTINCT`, and computed `SELECT` expressions. An aggregate also falls back when it is selected beside a plain or computed field, runs over a join or a collection not created by this package, or is combined with `fn.where` or `fn.having`. A grouped query fetches every matching row and aggregates them client-side, so its `limit` applies to the groups rather than the rows.
+
+Server-side aggregates use [PostgREST aggregate functions](https://supabase.com/blog/postgrest-aggregate-functions), which are disabled by default. Enable them with:
+
+```sql
+alter role authenticator set pgrst.db_aggregates_enabled = 'true';
+notify pgrst, 'reload config';
+```
 
 ## How It Works
 
@@ -192,7 +199,7 @@ The client-side filter fallback above applies to live queries and ordinary `quer
 
 PostgREST caps every response at its `db-max-rows` setting (1000 by default on Supabase). Collection reads and non-aggregate `queryOnce` queries page past this cap automatically: the adapter loops with `offset`, using a one-time `count=exact` on the first request to fetch the complete matching set (or the caller's `limit`).
 
-The **aggregate / `GROUP BY` / `HAVING`** path of `queryOnce` is the one exception — it issues a single request and is **not** paginated. Aggregate results are a few rows, so the cap is moot, but a `GROUP BY` / `HAVING` query whose grouped output exceeds `db-max-rows` is silently truncated at the cap. Add an explicit `limit`, or narrow the query, if you expect more grouped rows than the cap.
+The **server aggregate** path of `queryOnce` (a `select` of only aggregates) is the one exception — it issues a single request and is **not** paginated. Its result is a single row, so the cap does not apply. Every other aggregate, including grouped queries (`GROUP BY` / `HAVING`), pages through every matching row like any other read before aggregating client-side.
 
 Known limitations of the paging loop:
 
@@ -205,7 +212,7 @@ Known limitations of the paging loop:
 These operations fetch the required rows and process them in memory:
 
 - `SELECT` column subsets, renaming, and computed fields (`upper`, `lower`, `concat`, `length`, `add`, `coalesce`)
-- Aggregate functions: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` (except when using `queryOnce`)
+- Aggregate functions: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` (except aggregate-only selects in `queryOnce`)
 - `GROUP BY` and `HAVING`
 - `DISTINCT`
 - `ORDER BY` on computed fields

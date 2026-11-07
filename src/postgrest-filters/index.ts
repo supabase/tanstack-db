@@ -4,6 +4,9 @@ export {
   cursorWhereFromToSearch,
   loadSubsetOptionsToSearch,
 } from "./load-subset-options-to-search"
-export { queryIrToSearch } from "./query-ir-to-search"
+export {
+  isAggregateOnlySelect,
+  queryIrToSearch,
+} from "./query-ir-to-search"
 export { realtimeFiltersToSearch } from "./realtime-filters-to-search"
 export { subsetParamsToSearch } from "./subset-params-to-search"

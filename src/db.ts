@@ -1,7 +1,7 @@
 /* biome-ignore-all lint/suspicious/noExplicitAny: collection items are typed by the caller's schema, not statically known here */
 import type { StandardSchemaV1 } from "@standard-schema/spec"
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { BasicIndex, type Collection } from "@tanstack/db"
+import { BasicIndex, type Collection, type CollectionImpl } from "@tanstack/db"
 import type { QueryClient } from "@tanstack/query-core"
 import { queryCollectionOptions } from "@tanstack/query-db-collection"
 import {
@@ -89,6 +89,21 @@ const registerTable = (
   return tables.get(tableName)!
 }
 
+/**
+ * Options key marking a collection created by this package, so queryOnce can
+ * tell a collection backed by a Supabase table from any other collection.
+ */
+const supabaseCollection = Symbol("supabaseCollection")
+
+/** Whether this package created `collection`, so it reads a Supabase table */
+export function isSupabaseCollection(collection: CollectionImpl): boolean {
+  return (
+    (collection.config as { [supabaseCollection]?: boolean })[
+      supabaseCollection
+    ] === true
+  )
+}
+
 export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
   tableName,
   keys,
@@ -145,6 +160,7 @@ export const supabaseCollectionOptions = <TSchema extends StandardSchemaV1>({
 
   return {
     ...config,
+    [supabaseCollection]: true,
     sync: {
       sync: (
         ...args: Parameters<typeof originalSync>

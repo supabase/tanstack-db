@@ -6,6 +6,7 @@ import {
   coalesce,
   concat,
   count,
+  createCollection,
   eq,
   gt,
   gte,
@@ -14,6 +15,7 @@ import {
   isNull,
   length,
   like,
+  localOnlyCollectionOptions,
   lower,
   lt,
   lte,
@@ -24,7 +26,7 @@ import {
   sum,
   upper,
 } from "@tanstack/db"
-import { afterEach, beforeEach, describe, expect, test } from "vitest"
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { queryOnce } from "../src/index"
 import { VERSION } from "../src/version"
 import { makePaginatingFetch } from "./pagination.utils"
@@ -35,6 +37,7 @@ import {
   createMockFetch,
   expectFetchUrls,
   getRequestHeaders,
+  normalizeFetchUrl,
   SUPABASE_KEY,
   SUPABASE_URL,
 } from "./test.utils"
@@ -77,7 +80,7 @@ describe("queryOnce PostgREST query generation", () => {
       )
     })
 
-    test("is present on the aggregate/groupBy PostgREST push-down path", async () => {
+    test("is present on the server aggregate path", async () => {
       await queryOnce(
         (q) =>
           q
@@ -465,8 +468,8 @@ describe("queryOnce PostgREST query generation", () => {
       ])
     })
 
-    // Only the aggregate / groupBy / having path reaches this package's own
-    // translator; every other query falls through to the collection loader.
+    // Only the server aggregate path reaches this package's own translator;
+    // every other query falls through to the collection loader.
     test("aggregate with LIKE / ILIKE", async () => {
       await queryOnce(
         (q) =>
@@ -879,7 +882,8 @@ describe("queryOnce PostgREST query generation", () => {
             .limit(10),
         supabase
       )
-      expectFetchUrls(mockFetch, ["/rest/v1/users?limit=10&select=*"])
+      // The limit applies to groups, not rows, so it must not reach PostgREST.
+      expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
     })
 
     test.todo("SELECT columns + WHERE + ORDER BY + LIMIT", async () => {
@@ -1096,6 +1100,26 @@ describe("queryOnce PostgREST query generation", () => {
         "/rest/v1/users_todos?select=*&todo_id=gt.0&user_id=in.(user_1)",
       ])
     })
+
+    test("aggregate over a join is computed client-side", async () => {
+      // Pushed as-is, `count(ut.todo_id)` would lose its alias and count a
+      // `todo_id` column on users, so the join stays on the collection loader.
+      const rows = await queryOnce(
+        (q) =>
+          q
+            .from({ user: usersCollection })
+            .innerJoin({ ut: utCollection }, ({ user, ut }) =>
+              eq(user.id, ut.user_id)
+            )
+            .select(({ ut }) => ({ todoCount: count(ut.todo_id) })),
+        supabase
+      )
+      expectFetchUrls(mockFetch, [
+        "/rest/v1/users_todos?select=*",
+        "/rest/v1/users?id=in.(user_1)&select=*",
+      ])
+      expect(rows).toMatchObject([{ todoCount: 1 }])
+    })
   })
 })
 
@@ -1128,9 +1152,9 @@ describe("queryOnce pagination", () => {
     await users.cleanup()
   })
 
-  test("an aggregate queryOnce stays a single executeQuery request", async () => {
-    // The aggregate / groupBy / having path bypasses supabaseQueryFn, so it does
-    // NOT paginate: exactly one request is issued.
+  test("an ungrouped aggregate queryOnce stays a single executeQuery request", async () => {
+    // Ungrouped aggregates are pushed to PostgREST and bypass supabaseQueryFn,
+    // so they do NOT paginate: exactly one request is issued.
     const mockFetch = makePaginatingFetch(USERS, { cap: 2 })
     const users = createMockedUsersCollection(mockFetch)
     const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -1138,7 +1162,10 @@ describe("queryOnce pagination", () => {
     })
 
     await queryOnce(
-      (q) => q.from({ user: users }).groupBy(({ user }) => user.active),
+      (q) =>
+        q
+          .from({ user: users })
+          .select(({ user }) => ({ total: count(user.id) })),
       supabase
     )
 
@@ -1148,5 +1175,340 @@ describe("queryOnce pagination", () => {
     expect(gets).toHaveLength(1)
 
     await users.cleanup()
+  })
+})
+
+describe("queryOnce GROUP BY / HAVING results", () => {
+  // Five users split across two groups, behind a mock whose server cap is 2
+  // rows per request, so grouping must see every page to be correct.
+  const USERS = [
+    { id: 1, name: "A", email: "a@t", active: true },
+    { id: 2, name: "B", email: "b@t", active: false },
+    { id: 3, name: "C", email: "c@t", active: true },
+    { id: 4, name: "D", email: "d@t", active: true },
+    { id: 5, name: "E", email: "e@t", active: false },
+  ]
+
+  let mockFetch: ReturnType<typeof makePaginatingFetch>
+  let users: ReturnType<typeof createMockedUsersCollection>
+  let supabase: ReturnType<typeof createClient>
+
+  beforeEach(() => {
+    mockFetch = makePaginatingFetch(USERS, { cap: 2 })
+    users = createMockedUsersCollection(mockFetch)
+    supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      global: { fetch: mockFetch },
+    })
+  })
+
+  afterEach(async () => {
+    await users.cleanup()
+  })
+
+  const byActive = (rows: Array<{ active: boolean }>) =>
+    [...rows].sort((a, b) => Number(b.active) - Number(a.active))
+
+  test("groups rows and computes aggregates across every page", async () => {
+    const rows = await queryOnce(
+      (q) =>
+        q
+          .from({ user: users })
+          .groupBy(({ user }) => user.active)
+          .select(({ user }) => ({
+            active: user.active,
+            userCount: count(user.id),
+            idSum: sum(user.id),
+          })),
+      supabase
+    )
+
+    expect(byActive(rows)).toMatchObject([
+      { active: true, userCount: 3, idSum: 8 },
+      { active: false, userCount: 2, idSum: 7 },
+    ])
+  })
+
+  test("applies WHERE before grouping", async () => {
+    const rows = await queryOnce(
+      (q) =>
+        q
+          .from({ user: users })
+          .where(({ user }) => gt(user.id, 2))
+          .groupBy(({ user }) => user.active)
+          .select(({ user }) => ({
+            active: user.active,
+            userCount: count(user.id),
+          })),
+      supabase
+    )
+
+    expect(byActive(rows)).toMatchObject([
+      { active: true, userCount: 2 },
+      { active: false, userCount: 1 },
+    ])
+  })
+
+  test("filters groups with HAVING", async () => {
+    const rows = await queryOnce(
+      (q) =>
+        q
+          .from({ user: users })
+          .groupBy(({ user }) => user.active)
+          .select(({ user }) => ({
+            active: user.active,
+            userCount: count(user.id),
+          }))
+          .having(({ $selected }) => gt($selected.userCount, 2)),
+      supabase
+    )
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ active: true, userCount: 3 })
+  })
+
+  test("applies LIMIT to groups, not rows", async () => {
+    const rows = await queryOnce(
+      (q) =>
+        q
+          .from({ user: users })
+          .groupBy(({ user }) => user.active)
+          .select(({ user }) => ({
+            active: user.active,
+            userCount: count(user.id),
+          }))
+          .orderBy(({ $selected }) => $selected.userCount, "desc")
+          .limit(1),
+      supabase
+    )
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ active: true, userCount: 3 })
+  })
+
+  test("groups a collection not backed by Supabase without a request", async () => {
+    const local = createCollection(
+      localOnlyCollectionOptions({
+        getKey: (row: { id: number; active: boolean }) => row.id,
+        initialData: [
+          { id: 1, active: true },
+          { id: 2, active: true },
+        ],
+      })
+    )
+
+    const rows = await queryOnce(
+      (q) =>
+        q
+          .from({ row: local })
+          .groupBy(({ row }) => row.active)
+          .select(({ row }) => ({ rowCount: count(row.id) })),
+      supabase
+    )
+
+    expect(mockFetch).not.toHaveBeenCalled()
+    expect(rows).toMatchObject([{ rowCount: 2 }])
+  })
+})
+
+describe("queryOnce server aggregate routing", () => {
+  // Five users behind a mock whose server cap is 2 rows per request. The mock
+  // ignores `select`, so a query wrongly sent down the server aggregate path
+  // would get raw user rows back instead of the aggregate.
+  const USERS = [
+    { id: 1, name: "A", email: "a@t", active: true },
+    { id: 2, name: "B", email: "b@t", active: false },
+    { id: 3, name: "C", email: "c@t", active: true },
+    { id: 4, name: "D", email: "d@t", active: true },
+    { id: 5, name: "E", email: "e@t", active: false },
+  ]
+  const AGGREGATE_SELECT = /\.(count|sum|avg|min|max)\(\)/
+
+  let mockFetch: ReturnType<typeof makePaginatingFetch>
+  let users: ReturnType<typeof createMockedUsersCollection>
+  let supabase: ReturnType<typeof createClient>
+
+  beforeEach(() => {
+    mockFetch = makePaginatingFetch(USERS, { cap: 2 })
+    users = createMockedUsersCollection(mockFetch)
+    supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      global: { fetch: mockFetch },
+    })
+  })
+
+  afterEach(async () => {
+    await users.cleanup()
+  })
+
+  /** Asserts the rows were fetched and aggregated client-side */
+  const expectClientSide = () => {
+    const urls = mockFetch.mock.calls.map(([url]) => normalizeFetchUrl(url))
+    expect(urls.length).toBeGreaterThan(0)
+    for (const url of urls) {
+      expect(url).not.toMatch(AGGREGATE_SELECT)
+    }
+  }
+
+  test("computes an aggregate beside a computed field client-side", async () => {
+    const rows = await queryOnce(
+      (q) =>
+        q.from({ user: users }).select(({ user }) => ({
+          total: count(user.id),
+          nextId: add(max(user.id), 1),
+        })),
+      supabase
+    )
+
+    expectClientSide()
+    expect(rows).toMatchObject([{ total: 5, nextId: 6 }])
+  })
+
+  test("does not group by a plain column selected beside an aggregate", async () => {
+    // PostgREST would group `select=active,total:id.count()` by `active`.
+    const rows = await queryOnce(
+      (q) =>
+        q.from({ user: users }).select(({ user }) => ({
+          active: user.active,
+          total: count(user.id),
+        })),
+      supabase
+    )
+
+    expectClientSide()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ total: 5 })
+  })
+
+  test("applies fn.where before aggregating", async () => {
+    const rows = await queryOnce(
+      (q) =>
+        q
+          .from({ user: users })
+          .fn.where(({ user }) => user.id > 2)
+          .select(({ user }) => ({ total: count(user.id) })),
+      supabase
+    )
+
+    expectClientSide()
+    expect(rows).toMatchObject([{ total: 3 }])
+  })
+
+  test("applies fn.having to the aggregate row", async () => {
+    const rows = await queryOnce(
+      (q) =>
+        q
+          .from({ user: users })
+          .select(({ user }) => ({ total: count(user.id) }))
+          .fn.having(({ $selected }) => $selected.total > 10),
+      supabase
+    )
+
+    expectClientSide()
+    expect(rows).toEqual([])
+  })
+
+  test("aggregates over a subquery that limits its source", async () => {
+    const rows = await queryOnce((q) => {
+      const firstTwo = q
+        .from({ user: users })
+        .orderBy(({ user }) => user.id)
+        .limit(2)
+      return q
+        .from({ top: firstTwo })
+        .select(({ top }) => ({ total: count(top.id) }))
+    }, supabase)
+
+    expectClientSide()
+    expect(rows).toMatchObject([{ total: 2 }])
+  })
+})
+
+describe("queryOnce server aggregate path", () => {
+  // Answers every request the way PostgREST answers an aggregate-only select.
+  let mockFetch: ReturnType<typeof createMockFetch>
+  let users: ReturnType<typeof createMockedUsersCollection>
+  let supabase: ReturnType<typeof createClient>
+
+  beforeEach(() => {
+    mockFetch = vi.fn<typeof fetch>().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify([{ total: 5 }]), {
+          headers: { "content-type": "application/json" },
+        })
+      )
+    )
+    users = createMockedUsersCollection(mockFetch)
+    supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      global: { fetch: mockFetch },
+    })
+  })
+
+  afterEach(async () => {
+    await users.cleanup()
+  })
+
+  test("findOne resolves to the aggregate row, not an array", async () => {
+    const result = await queryOnce(
+      (q) =>
+        q
+          .from({ user: users })
+          .select(({ user }) => ({ total: count(user.id) }))
+          .findOne(),
+      supabase
+    )
+
+    expectFetchUrls(mockFetch, ["/rest/v1/users?select=total:id.count()"])
+    expect(result).toEqual({ total: 5 })
+  })
+
+  test("does not push ORDER BY beside an aggregate", async () => {
+    // Postgres rejects ORDER BY on a column outside the aggregates, and a
+    // single row has nothing to order.
+    const rows = await queryOnce(
+      (q) =>
+        q
+          .from({ user: users })
+          .orderBy(({ user }) => user.name)
+          .select(({ user }) => ({ total: count(user.id) })),
+      supabase
+    )
+
+    expectFetchUrls(mockFetch, ["/rest/v1/users?select=total:id.count()"])
+    expect(rows).toEqual([{ total: 5 }])
+  })
+
+  test("pushes the filters of a filter-only subquery source", async () => {
+    const rows = await queryOnce((q) => {
+      const laterUsers = q
+        .from({ user: users })
+        .where(({ user }) => gt(user.id, 2))
+      return q
+        .from({ later: laterUsers })
+        .select(({ later }) => ({ total: count(later.id) }))
+    }, supabase)
+
+    expectFetchUrls(mockFetch, [
+      "/rest/v1/users?select=total:id.count()&id=gt.2",
+    ])
+    expect(rows).toEqual([{ total: 5 }])
+  })
+
+  test("computes an aggregate over a collection not backed by Supabase client-side", async () => {
+    // A collection this package did not create has no table behind it, so
+    // pushing its aggregate would query a table named after its id.
+    const local = createCollection(
+      localOnlyCollectionOptions({
+        getKey: (row: { id: number }) => row.id,
+        initialData: [{ id: 1 }, { id: 2 }],
+      })
+    )
+
+    const rows = await queryOnce(
+      (q) =>
+        q.from({ row: local }).select(({ row }) => ({ total: count(row.id) })),
+      supabase
+    )
+
+    expect(mockFetch).not.toHaveBeenCalled()
+    expect(rows).toMatchObject([{ total: 2 }])
   })
 })
