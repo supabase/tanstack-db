@@ -15,8 +15,9 @@ const id = new IR.PropRef(["id"])
 const other = new IR.PropRef(["other"])
 const active = new IR.PropRef(["active"])
 
-// Mirrors `measureSubset` in src/functions.ts, minus the real supabase client:
-// renders the same URLs the adapter would send and measures their length.
+// A simplified `measureSubset` (src/functions.ts) without the real supabase
+// client: renders the same query strings the adapter would send and measures
+// them, leaving out the `?` and the paging params the real one also counts.
 const measure = (options: LoadSubsetOptions): number => {
   const mainLength =
     BASE_URL.length + loadSubsetOptionsToSearch(options).toString().length
@@ -118,6 +119,43 @@ describe("splitLoadSubsetOptions", () => {
     expect(result[0]).toBe(options)
   })
 
+  test("sends a subset as-is when an unsplittable not(in) keeps it oversized, even with a small top-level IN", () => {
+    const smallIds = Array.from({ length: 10 }, (_, i) => `id-${i}`)
+    const hugeExcluded = Array.from({ length: 2000 }, (_, i) => `other-${i}`)
+    const options: LoadSubsetOptions = {
+      where: and(inArray(id, smallIds), not(inArray(other, hugeExcluded))),
+    }
+    const maxUrlLength = 8000
+    // Precondition: the subset really is oversized, and stays oversized for any
+    // single `id` value because of the `not(in)` alone.
+    expect(measure(options)).toBeGreaterThan(maxUrlLength)
+
+    const result = split(options, maxUrlLength)
+
+    // Splitting `id` cannot make this fit, so it must not fan out one request
+    // per value: the subset is sent as-is.
+    expect(result).toHaveLength(1)
+    expect(result[0]).toBe(options)
+  })
+
+  test("sends a subset as-is when an IN nested in OR keeps it oversized, even with a small top-level IN", () => {
+    const smallIds = Array.from({ length: 10 }, (_, i) => `id-${i}`)
+    const hugeNested = Array.from({ length: 2000 }, (_, i) => `other-${i}`)
+    const options: LoadSubsetOptions = {
+      where: and(
+        inArray(id, smallIds),
+        or(inArray(other, hugeNested), eq(active, true))
+      ),
+    }
+    const maxUrlLength = 8000
+    expect(measure(options)).toBeGreaterThan(maxUrlLength)
+
+    const result = split(options, maxUrlLength)
+
+    expect(result).toHaveLength(1)
+    expect(result[0]).toBe(options)
+  })
+
   test("an unsplittable subset (no where) returns [options] unchanged", () => {
     // Nothing to split, yet still "too long" per the fake budget: the
     // splitter must not loop or throw, just hand the request back as-is.
@@ -129,6 +167,9 @@ describe("splitLoadSubsetOptions", () => {
 
   describe("limit/offset/cursor rewriting", () => {
     const values = Array.from({ length: 100 }, (_, i) => i)
+    // Room for about ten values per chunk, so the list must split.
+    const budgetFor = (options: LoadSubsetOptions) =>
+      measure({ ...options, where: inArray(id, values.slice(0, 10)) })
 
     test("keeps limit unchanged and does not touch offset when a cursor is present", () => {
       const options: LoadSubsetOptions = {
@@ -136,7 +177,7 @@ describe("splitLoadSubsetOptions", () => {
         limit: 20,
         cursor: { whereFrom: gt(id, 5), whereCurrent: eq(id, 5) },
       }
-      const chunks = split(options, BASE_URL.length + 20)
+      const chunks = split(options, budgetFor(options))
 
       expect(chunks.length).toBeGreaterThan(1)
       for (const chunk of chunks) {
@@ -151,7 +192,7 @@ describe("splitLoadSubsetOptions", () => {
         limit: 10,
         offset: 5,
       }
-      const chunks = split(options, BASE_URL.length + 20)
+      const chunks = split(options, budgetFor(options))
 
       expect(chunks.length).toBeGreaterThan(1)
       for (const chunk of chunks) {
@@ -165,7 +206,7 @@ describe("splitLoadSubsetOptions", () => {
         where: inArray(id, values),
         offset: 5,
       }
-      const chunks = split(options, BASE_URL.length + 20)
+      const chunks = split(options, budgetFor(options))
 
       expect(chunks.length).toBeGreaterThan(1)
       for (const chunk of chunks) {

@@ -187,12 +187,28 @@ export const MAX_URL_LENGTH = 8000
 // produce far more chunks than are worth having in flight simultaneously.
 const MAX_CONCURRENT_CHUNKS = 6
 
+// Pages after the first (`fetchAllPages`) set `offset` and `limit` on top of
+// the subset's own search; no real value is wider than this one.
+const WIDEST_PAGE_PARAM = `${Number.MAX_SAFE_INTEGER}`
+
 /**
- * The length of the longest URL a subset would produce: the base table URL
- * plus the main request's query string, and — when the subset has a cursor —
- * the unlimited `whereCurrent` tie request's query string too, since
- * `loadWindow` sends both for a cursor read. Measuring rendered URLs (rather
- * than estimating) accounts for quoting and percent-encoding exactly.
+ * The length of the longest URL `fetchAllPages` could send for `search`: the
+ * base URL, the `?`, and the query string with `offset`/`limit` at their widest,
+ * so every page — not only the first — stays within budget.
+ */
+function pagedUrlLength(baseLength: number, search: URLSearchParams): number {
+  const paged = new URLSearchParams(search)
+  paged.set("offset", WIDEST_PAGE_PARAM)
+  paged.set("limit", WIDEST_PAGE_PARAM)
+  return baseLength + "?".length + paged.toString().length
+}
+
+/**
+ * The length of the longest URL a subset would produce: the main request's
+ * pages, and — when the subset has a cursor — the unlimited `whereCurrent` tie
+ * request's pages too, since `loadWindow` sends both for a cursor read.
+ * Measuring rendered URLs (rather than estimating) accounts for quoting and
+ * percent-encoding exactly.
  */
 function measureSubset(
   supabase: SupabaseClient,
@@ -200,10 +216,10 @@ function measureSubset(
   options: LoadSubsetOptions
 ): number {
   const base = supabase.from(tableName).url.toString().length
-  const mainLength = base + loadSubsetOptionsToSearch(options).toString().length
+  const mainLength = pagedUrlLength(base, loadSubsetOptionsToSearch(options))
   const tiesSearch = cursorCurrentToSearch(options)
   return tiesSearch
-    ? Math.max(mainLength, base + tiesSearch.toString().length)
+    ? Math.max(mainLength, pagedUrlLength(base, tiesSearch))
     : mainLength
 }
 

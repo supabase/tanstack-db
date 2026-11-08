@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js"
-import { IR, inArray, type LoadSubsetOptions } from "@tanstack/db"
+import { and, IR, inArray, type LoadSubsetOptions, not } from "@tanstack/db"
 import { QueryClient } from "@tanstack/query-core"
 import { describe, expect, test, vi } from "vitest"
 import { MAX_URL_LENGTH, supabaseQueryFn } from "../src/functions"
@@ -53,9 +53,9 @@ function idsExceedingLength(minLength: number): number[] {
   throw new Error(`could not size an id list past ${minLength} characters`)
 }
 
-const run = (
+const runWhere = (
   mockFetch: ReturnType<typeof makePaginatingFetch> | typeof fetch,
-  ids: number[],
+  where: unknown,
   signal: AbortSignal = new AbortController().signal
 ) => {
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -65,8 +65,55 @@ const run = (
     client: new QueryClient(),
     queryKey: ["items"],
     signal,
-    meta: { loadSubsetOptions: { where: inArray(idRef, ids) } } as never,
+    meta: { loadSubsetOptions: { where } } as never,
   })
+}
+
+const run = (
+  mockFetch: ReturnType<typeof makePaginatingFetch> | typeof fetch,
+  ids: number[],
+  signal: AbortSignal = new AbortController().signal
+) => runWhere(mockFetch, inArray(idRef, ids), signal)
+
+// The length of an `in(id, ids)` subset's first-page URL without its `?`: how
+// `measureSubset` (src/functions.ts) used to measure it, before it counted the
+// `?` and the `offset`/`limit` params later pages add.
+const measuredLength = (ids: number[]): number =>
+  BASE_URL_LENGTH +
+  loadSubsetOptionsToSearch({
+    where: inArray(idRef, ids),
+  } as unknown as LoadSubsetOptions).toString().length
+
+const FIVE_DIGIT_START = 10_000
+const SIX_DIGIT_START = 100_000
+const TRAILING_SIX_DIGIT_START = 200_000
+
+/**
+ * An id list whose leading ids measure *exactly* `targetLength` (per
+ * `measuredLength`), followed by `trailing` more ids that cannot fit beside it
+ * and so spill into later chunks. Deterministic: the list is dense 5-digit ids
+ * up to the longest prefix within the target, then the last few of those are
+ * widened to 6 digits (+1 character each) to close the remaining gap exactly.
+ */
+function idsPackedTo(targetLength: number, trailing = 5): number[] {
+  let count = 1
+  const fiveDigit = (n: number) =>
+    Array.from({ length: n }, (_, i) => FIVE_DIGIT_START + i)
+  while (measuredLength(fiveDigit(count + 1)) <= targetLength) {
+    count++
+  }
+  const gap = targetLength - measuredLength(fiveDigit(count))
+  const packed = fiveDigit(count).map((value, i) =>
+    i >= count - gap ? SIX_DIGIT_START + i : value
+  )
+  if (measuredLength(packed) !== targetLength) {
+    throw new Error(`could not pack an id list to exactly ${targetLength}`)
+  }
+  const spill = Array.from(
+    { length: trailing },
+    (_, i) => TRAILING_SIX_DIGIT_START + i
+  )
+  return [...packed, ...spill]
 }
 
 describe("supabaseQueryFn: chunked fan-out for an oversized IN list", () => {
@@ -90,7 +137,7 @@ describe("supabaseQueryFn: chunked fan-out for an oversized IN list", () => {
     }
     // Every rendered request line stays within the fixed budget.
     for (const rawUrl of getRawUrls(mockFetch)) {
-      expect(rawUrl.length).toBeLessThanOrEqual(MAX_URL_LENGTH + 1)
+      expect(rawUrl.length).toBeLessThanOrEqual(MAX_URL_LENGTH)
     }
   })
 
@@ -206,5 +253,65 @@ describe("supabaseQueryFn: chunked fan-out for an oversized IN list", () => {
     // The cap should actually bind here — otherwise this test would not have
     // exercised the concurrency limiter at all.
     expect(peak).toBeGreaterThan(1)
+  })
+
+  test("an unsplittable not(in) keeps the subset oversized: one request, not one per value", async () => {
+    const ids = Array.from({ length: 10 }, (_, i) => i + 1)
+    const hugeExcluded = Array.from({ length: 2000 }, (_, i) => `other-${i}`)
+    const where = and(
+      inArray(idRef, ids),
+      not(inArray(new IR.PropRef<string>(["other"]), hugeExcluded))
+    )
+    // Precondition: the unsplit URL is over budget because of the `not(in)`.
+    expect(
+      BASE_URL_LENGTH +
+        loadSubsetOptionsToSearch({
+          where,
+        } as unknown as LoadSubsetOptions).toString().length
+    ).toBeGreaterThan(MAX_URL_LENGTH)
+    const mockFetch = makePaginatingFetch(ids.map((id) => ({ id })))
+
+    const rows = await runWhere(mockFetch, where)
+
+    expect((rows as Array<{ id: number }>).length).toBe(ids.length)
+    // Splitting the small `id` list cannot shrink the URL, so the subset goes
+    // out as-is, as a single request.
+    expect(getSearches(mockFetch)).toHaveLength(1)
+  })
+
+  test("a chunk packed to exactly the URL limit stays within it (the `?` counts)", async () => {
+    const ids = idsPackedTo(MAX_URL_LENGTH)
+    const mockFetch = makePaginatingFetch(ids.map((id) => ({ id })))
+
+    const rows = await run(mockFetch, ids)
+
+    expect((rows as Array<{ id: number }>).length).toBe(ids.length)
+    const rawUrls = getRawUrls(mockFetch)
+    // The list was split, and one chunk measures exactly MAX_URL_LENGTH
+    // without its `?`.
+    expect(rawUrls.length).toBeGreaterThan(1)
+    for (const rawUrl of rawUrls) {
+      expect(rawUrl.length).toBeLessThanOrEqual(MAX_URL_LENGTH)
+    }
+  })
+
+  test("paging a packed chunk keeps every page's URL, with offset and limit, within the limit", async () => {
+    // One below the limit, so the first page's URL (with its `?`) is exactly
+    // at it; later pages then add `&offset=...&limit=...` on top.
+    const ids = idsPackedTo(MAX_URL_LENGTH - 1)
+    const mockFetch = makePaginatingFetch(
+      ids.map((id) => ({ id })),
+      { cap: 100 }
+    )
+
+    const rows = await run(mockFetch, ids)
+
+    expect((rows as Array<{ id: number }>).length).toBe(ids.length)
+    const rawUrls = getRawUrls(mockFetch)
+    // Pages past the first really were requested.
+    expect(rawUrls.some((rawUrl) => rawUrl.includes("offset="))).toBe(true)
+    for (const rawUrl of rawUrls) {
+      expect(rawUrl.length).toBeLessThanOrEqual(MAX_URL_LENGTH)
+    }
   })
 })

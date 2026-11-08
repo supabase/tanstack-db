@@ -149,12 +149,16 @@ function longestFittingPrefix(
  * minimum. The resulting conjunct lists are a cartesian product of the split
  * candidates and remain pairwise disjoint on the split column(s), so the union
  * of their result sets is exactly the original subset's — no dedupe needed.
+ *
+ * Returns `undefined` when no split fits: something other than the split
+ * candidates (e.g. a huge `not(in(...))`) keeps even a single value over
+ * budget, so fanning out would only send more oversized requests.
  */
 function splitConjuncts(
   options: LoadSubsetOptions,
   conjuncts: Expression[],
   config: SplitLoadSubsetOptionsConfig
-): Expression[][] {
+): Expression[][] | undefined {
   const [current, ...rest] = splittableConjuncts(conjuncts)
   if (!current) {
     return [conjuncts]
@@ -182,13 +186,8 @@ function splitConjuncts(
 
     const other = rest.find((candidate) => candidate.values.length > 1)
     if (!other) {
-      // Nothing left to shrink and even a single value does not fit: take it
-      // anyway so the loop always makes progress. The request may still come
-      // back oversized, but that is no worse than not splitting at all — the
-      // server answers (or errors) exactly as it would without this module.
-      chunks.push(replaceConjunct(conjuncts, current, remaining.slice(0, 1)))
-      remaining = remaining.slice(1)
-      continue
+      // Nothing left to shrink and even a single value does not fit.
+      return
     }
 
     // Another IN is too big to leave room for even one of `current`'s values:
@@ -199,13 +198,15 @@ function splitConjuncts(
       other.values.slice(0, middle),
       other.values.slice(middle),
     ]) {
-      chunks.push(
-        ...splitConjuncts(
-          options,
-          replaceConjunct(withRemaining, other, half),
-          config
-        )
+      const halfChunks = splitConjuncts(
+        options,
+        replaceConjunct(withRemaining, other, half),
+        config
       )
+      if (!halfChunks) {
+        return
+      }
+      chunks.push(...halfChunks)
     }
     remaining = []
   }
@@ -221,9 +222,9 @@ function splitConjuncts(
  *
  * Only a positive, top-level `AND`ed `in(ref, [...])` conjunct is ever split:
  * splitting inside `OR`/`NOT`, or a top-level `not(in(...))`, would change
- * which rows the union of chunks matches. When no such conjunct exists (or
- * `options.where` is absent), this returns `[options]` and the caller sends
- * the request as-is, letting the server's own error (if any) surface exactly
+ * which rows the union of chunks matches. When no such conjunct exists,
+ * `options.where` is absent, or no split brings every chunk within budget,
+ * this returns `[options]` and the caller sends the request as-is, letting the server's own error (if any) surface exactly
  * as it does today.
  */
 export function splitLoadSubsetOptions(
@@ -242,7 +243,11 @@ export function splitLoadSubsetOptions(
     return [options]
   }
 
-  return splitConjuncts(options, conjuncts, config).map((chunkConjuncts) =>
+  const chunks = splitConjuncts(options, conjuncts, config)
+  if (!chunks) {
+    return [options]
+  }
+  return chunks.map((chunkConjuncts) =>
     buildChunkOptions(options, chunkConjuncts)
   )
 }
