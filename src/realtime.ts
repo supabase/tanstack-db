@@ -7,6 +7,10 @@ import {
 } from "@supabase/supabase-js"
 import { type Collection } from "@tanstack/db"
 import type { QueryClient } from "@tanstack/query-core"
+import {
+  DeleteOperationItemNotFoundError,
+  UpdateOperationItemNotFoundError,
+} from "@tanstack/query-db-collection"
 import { realtimeFiltersToSearch } from "./postgrest-filters"
 
 type ChangeEvent = "INSERT" | "UPDATE" | "DELETE"
@@ -38,6 +42,21 @@ export const isSynced = (
   collection: Collection<any, any>,
   key: string | number
 ): boolean => collection._state.syncedData.has(key)
+
+/**
+ * Direct writes are applied asynchronously, so the row can be removed — e.g. by
+ * the local delete handler confirming the same delete — between the
+ * {@link isSynced} check and the write landing. The row is gone either way.
+ */
+const ignoreRemovedRow = (error: unknown) => {
+  if (
+    error instanceof UpdateOperationItemNotFoundError ||
+    error instanceof DeleteOperationItemNotFoundError
+  ) {
+    return
+  }
+  throw error
+}
 
 /**
  * Subscribes to Supabase Realtime changes for a table and writes inserts,
@@ -98,14 +117,14 @@ export const attachSupabaseListeners = <
   const handleKnownUpdate = (payload: RealtimePostgresUpdatePayload<T>) => {
     const row = payload.new
     if (isSynced(collection, collection.getKeyFromItem(row))) {
-      collection.utils.writeUpdate(row)
+      collection.utils.writeUpdate(row).catch(ignoreRemovedRow)
     }
   }
 
   const handleDelete = (payload: RealtimePostgresDeletePayload<T>) => {
     const id = collection.getKeyFromItem(payload.old as T)
     if (isSynced(collection, id)) {
-      collection.utils.writeDelete(id)
+      collection.utils.writeDelete(id).catch(ignoreRemovedRow)
     }
   }
 

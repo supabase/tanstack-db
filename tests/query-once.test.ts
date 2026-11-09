@@ -8,10 +8,13 @@ import {
   count,
   createCollection,
   eq,
+  GroupByError,
+  groupKeys,
   gt,
   gte,
   ilike,
   inArray,
+  include,
   isNull,
   length,
   like,
@@ -603,7 +606,9 @@ describe("queryOnce PostgREST query generation", () => {
     test("single column groupBy", async () => {
       await queryOnce(
         (q) =>
-          q.from({ user: usersCollection }).groupBy(({ user }) => user.active),
+          q
+            .from({ user: usersCollection })
+            .groupBy(groupKeys(({ user }) => user.active)),
         supabase
       )
       expectFetchUrls(mockFetch, ["/rest/v1/users?select=*"])
@@ -615,7 +620,7 @@ describe("queryOnce PostgREST query generation", () => {
           q
             .from({ user: usersCollection })
             .where(({ user }) => eq(user.active, true))
-            .groupBy(({ user }) => user.active),
+            .groupBy(groupKeys(({ user }) => user.active)),
         supabase
       )
       expectFetchUrls(mockFetch, ["/rest/v1/users?select=*&active=eq.true"])
@@ -1009,9 +1014,11 @@ describe("queryOnce PostgREST query generation", () => {
         (q) =>
           q.from({ user: usersCollection }).select(({ user }) => ({
             id: user.id,
-            todos: q
-              .from({ ut: utCollection })
-              .where(({ ut }) => eq(ut.user_id, user.id)),
+            todos: include(
+              q
+                .from({ ut: utCollection })
+                .where(({ ut }) => eq(ut.user_id, user.id))
+            ),
           })),
         supabase
       )
@@ -1363,19 +1370,22 @@ describe("queryOnce server aggregate routing", () => {
   })
 
   test("does not group by a plain column selected beside an aggregate", async () => {
-    // PostgREST would group `select=active,total:id.count()` by `active`.
-    const rows = await queryOnce(
-      (q) =>
-        q.from({ user: users }).select(({ user }) => ({
-          active: user.active,
-          total: count(user.id),
-        })),
-      supabase
-    )
+    // PostgREST would group `select=active,total:id.count()` by `active`;
+    // TanStack DB rejects the query before any request is sent.
+    await expect(
+      queryOnce(
+        (q) =>
+          q.from({ user: users }).select(({ user }) => ({
+            active: user.active,
+            total: count(user.id),
+          })),
+        supabase
+      )
+    ).rejects.toThrow(GroupByError)
 
-    expectClientSide()
-    expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatchObject({ total: 5 })
+    for (const [url] of mockFetch.mock.calls) {
+      expect(normalizeFetchUrl(url)).not.toMatch(AGGREGATE_SELECT)
+    }
   })
 
   test("applies fn.where before aggregating", async () => {

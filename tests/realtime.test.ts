@@ -566,7 +566,7 @@ describe("realtime filter propagation", () => {
         emit(mockChannel, { eventType: "INSERT", new: row, old: {} })
       ).not.toThrow()
 
-      await expect(tx.isPersisted.promise).resolves.toBeDefined()
+      await expect(tx.when("settled")).resolves.toBeDefined()
       expect(collection.get(key)?.name).toBe("Race")
     })
 
@@ -583,7 +583,7 @@ describe("realtime filter propagation", () => {
         emit(mockChannel, { eventType: "DELETE", new: {}, old: row })
       ).not.toThrow()
 
-      await expect(tx.isPersisted.promise).resolves.toBeDefined()
+      await expect(tx.when("settled")).resolves.toBeDefined()
       expect(collection.has(key)).toBe(false)
     })
   })
